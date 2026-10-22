@@ -217,6 +217,11 @@ class OpenAILLM:
     """langchain-openai 기반. 모델은 OPENAI_MODEL, 시간 상한은 LLM_TIMEOUT_S (.env)."""
 
     def __init__(self, model: str | None = None, timeout_s: float | None = None):
+        from .config import key_problem  # 저장소 루트의 .env 를 (없으면 만들고) 읽음
+
+        problem = key_problem()
+        if problem:
+            raise LLMUnavailable(problem)  # 키가 없으면 호출 전에 바로 알려 줌 (키 값은 출력하지 않음)
         try:
             from langchain_openai import ChatOpenAI  # 지연 import: 테스트에는 패키지 불필요
         except ImportError as exc:

@@ -29,14 +29,20 @@ app = create_app(agent=LLMAgent(llm, search_knowledge=MockKnowledgeSearch(), fal
 git clone https://github.com/team-onetruck/oneload_agent.git && cd oneload_agent
 python3 -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-pytest -q                                              # 33 passed — API 키 없이 (FakeLLM + 백엔드 지도 사본)
+pytest -q                                              # 37 passed — API 키 없이 (FakeLLM + 백엔드 지도 사본)
 python eval/run_eval.py agent                          # 평가 17문항 (FakeLLM)
 
-# 실제 LLM (키 필요)
-cp .env.example .env                                   # OPENAI_API_KEY 입력
-set -a && source .env && set +a
-python eval/run_eval.py agent --llm openai
 ```
+
+**실제 LLM 으로 실행 (키만 넣으면 됨)**
+
+```bash
+python -m hangil_r2.config                            # 저장소 루트에 .env 를 만들고 위치를 알려 줌
+#  → .env 를 열어 OPENAI_API_KEY= 뒤에 키를 붙여 넣고 저장 (따옴표 · 공백 없이)
+python eval/run_eval.py agent --llm openai            # .env 는 자동으로 읽힘
+git status                                            # .env 가 목록에 없어야 정상 (.gitignore)
+```
+키가 비어 있으면 실행이 멈추고 고칠 파일 경로를 알려 준다. 키 값은 화면 · 로그에 출력하지 않는다.
 
 **백엔드와 맞는지 확인** (백엔드 저장소는 읽기만 함)
 
@@ -57,12 +63,13 @@ hangil_r2/
   vision.py         LLMVision — 사진 → 보이는 글자 · 시설
   llm.py            LLM 어댑터 (FakeLLM · OpenAILLM), 오류 2종 구분
   knowledge.py      R3 검색 · 시각표 도구 인터페이스 + Mock
+  config.py         .env 만들기 · 읽기 · 키 확인 (python -m hangil_r2.config)
   ranker.py         [제안] match_location 개선안 (드문 문구 가중 · 오타 허용 · 동점 안내)
 prompts/            understand · compose · scene (v3) + CHANGELOG.md
 mocks/              maps/seoul-station.json (백엔드 사본) · knowledge.json (데모 문서) · timetable.json (가상)
 eval/               agent_cases.csv (17문항) · run_eval.py
 scripts/            check_backend_compat.py
-tests/              agent 22 · vision 4 · ranker 7 (파라미터 포함 33건)
+tests/              agent 22 · vision 4 · ranker 7 · config 4 (파라미터 포함 37건)
 docs/               STEP05.md · localization.md · decisions.md · handoff.md
 ```
 

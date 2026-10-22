@@ -116,4 +116,10 @@ if __name__ == "__main__":
     ap.add_argument("--llm", choices=["fake", "openai"], default="fake")
     ap.add_argument("--photos", type=Path, default=ROOT / "eval" / "photos")
     a = ap.parse_args()
+    if a.llm == "openai":
+        from hangil_r2.config import key_problem
+
+        problem = key_problem()  # .env 가 없으면 여기서 만들어지고, 키가 비었으면 위치를 알려 주고 멈춤
+        if problem:
+            sys.exit(problem)
     run_agent(a.llm) if a.mode == "agent" else run_localization(a.llm, a.photos)

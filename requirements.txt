@@ -2,6 +2,7 @@
 langgraph==1.2.16
 pydantic==2.14.1
 langchain-openai==1.7.2   # 실제 LLM 호출 (OpenAILLM). 테스트에는 불필요
+python-dotenv==1.2.4      # 저장소 루트 .env 자동 읽기 (hangil_r2/config.py)
 
 # 테스트
 pytest==9.1.1
