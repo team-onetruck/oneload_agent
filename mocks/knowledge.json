@@ -1,0 +1,9 @@
+{
+  "_note": "R3 search_knowledge 대역. 문구는 흐름 시험용 가상 예시이며 실제 이용 방법 · 요금이 아님. 실제 내용은 R3 수집 자료로 교체.",
+  "hits": [
+    {"document_id": "doc-12", "title": "직통열차 승차권 구매 안내", "excerpt": "(가상 예시) 직통열차 승차권은 직통열차 승차권 판매처에서 구매한다.",
+     "source_url": "https://example.invalid/guide", "verified_at": "2026-10-15", "scope": "ticket", "keywords": ["직통열차", "공항", "티켓", "승차권", "airport", "ticket"]},
+    {"document_id": "doc-20", "title": "1회용 교통카드 보증금 환급 안내", "excerpt": "(가상 예시) 1회용 교통카드 보증금은 역 안 보증금 환급기에서 환급받는다.",
+     "source_url": "https://example.invalid/refund", "verified_at": "2026-10-15", "scope": "card", "keywords": ["보증금", "환급", "1회용", "refund", "deposit"]}
+  ]
+}

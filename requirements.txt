@@ -1,0 +1,7 @@
+# 2026-10-22 실제 설치 · 테스트한 버전 (Python 3.13)
+langgraph==1.2.16
+pydantic==2.14.1
+langchain-openai==1.7.2   # 실제 LLM 호출 (OpenAILLM). 테스트에는 불필요
+
+# 테스트
+pytest==9.1.1
