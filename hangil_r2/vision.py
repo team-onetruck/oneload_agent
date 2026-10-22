@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import logging
 
-from .backend.contracts import VisionUnavailable
 from .backend.localization_types import VisionFeatures
+from .compat import vision_unavailable_class
 from .llm import LLM, LLMError, LLMUnavailable
 
 log = logging.getLogger("hangil_r2.vision")
@@ -28,8 +28,9 @@ class LLMVision:
         try:
             return VisionFeatures.model_validate(self.llm.read_scene(image))
         except LLMUnavailable as exc:
-            # 백엔드가 503 AI_SERVICE_UNAVAILABLE → 화면이 수동 위치 선택으로 넘어감
-            raise VisionUnavailable("사진 인식 서버에 연결하지 못했어요.") from exc
+            # 백엔드가 503 AI_SERVICE_UNAVAILABLE → 화면이 수동 위치 선택으로 넘어감.
+            # 백엔드가 잡는 '같은 클래스'로 던져야 503 이 된다 (사본 클래스면 500, 이슈 #1) → compat.py
+            raise vision_unavailable_class()("사진 인식 서버에 연결하지 못했어요.") from exc
         except (LLMError, ValueError) as exc:
             # 형식이 깨진 응답: 위치를 추측하지 않고 '읽은 글자 없음' 으로 → 백엔드가 재촬영 안내
             log.warning("vision_parse_failed %s", exc)

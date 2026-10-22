@@ -1,6 +1,6 @@
 # 인수인계 (R2 정유은 → R4 · R3 · R6, 10/23 부재 대비)
 
-기준: oneload-backend `0019f55` (2026-10-22). `scripts/check_backend_compat.py` 로 규격 일치 · 실제 API 연결을 확인함.
+기준: oneload-backend `a82b7be` · oneload-data `606f648` (2026-10-22). `scripts/check_backend_compat.py` 로 규격 일치 · 실제 API 연결을 확인함.
 
 ## R4 (Backend) — 연결 방법
 
@@ -11,9 +11,12 @@ from hangil_r2 import LLMAgent, LLMVision, OpenAILLM, MockKnowledgeSearch
 from app.ai.rule_agent import RuleAgent
 
 llm = OpenAILLM()                                   # APP_OPENAI_API_KEY → OPENAI_API_KEY 로 읽힘 (아래 주의)
-app.state.agent = LLMAgent(llm, search_knowledge=MockKnowledgeSearch(), fallback=RuleAgent())
-app.state.vision = LLMVision(llm)
+vision = LLMVision(llm)                             # 같은 Vision 하나를 두 곳에 넣는다
+agent = LLMAgent(llm, search_knowledge=MockKnowledgeSearch(), vision=vision, fallback=RuleAgent())
+app = create_app(agent=agent, vision=vision)
 ```
+- `create_app(vision=...)` → 사진 위치 `/localizations` 에서 사용
+- `LLMAgent(vision=...)` → 대화 `/messages` 에 첨부한 사진을 읽을 때 사용. **빠뜨리면 대화 사진은 읽지 않고 글자로만 답한다** (오류 없이 200 이라 놓치기 쉬움)
 
 | 상황 | R2 동작 | 백엔드에 보이는 결과 |
 |---|---|---|

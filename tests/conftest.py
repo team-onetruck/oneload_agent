@@ -10,7 +10,7 @@ MAPS = Path(__file__).resolve().parent.parent / "mocks" / "maps"
 
 @pytest.fixture(scope="session")
 def seoul() -> MapData:
-    """백엔드 data/maps/seoul-station.json 사본 (노드 위치 · 문구 등은 답사 전 임시값)."""
+    """oneload-data maps/seoul-station.json 사본 (노드 위치 · 문구 등은 답사 전 임시값)."""
     return MapStore.load(MAPS).get("seoul-station")
 
 

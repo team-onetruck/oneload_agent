@@ -1,7 +1,8 @@
 """LLM 기반 대화 Agent — 백엔드 `app.ai.contracts.Agent` 규격 구현.
 
 백엔드 연결 (oneload-backend README "Swapping one in is a change to create_app() defaults"):
-    create_app(agent=LLMAgent(OpenAILLM(), fallback=RuleAgent()), vision=LLMVision(OpenAILLM()))
+    vision = LLMVision(llm)  # 같은 Vision 을 Agent(대화 사진) 와 create_app(사진 위치) 양쪽에 넣는다
+    create_app(agent=LLMAgent(llm, vision=vision, fallback=RuleAgent()), vision=vision)
 
 흐름 (노드 이름 = docs/STEP05.md 그림의 단계 이름)
 
@@ -42,9 +43,9 @@ from .backend.contracts import (
     Slots,
     Source,
     VisionExtractor,
-    VisionUnavailable,
 )
 from .backend.mapdata import Poi
+from .compat import vision_unavailable_types
 from .knowledge import DepartureSearch, KnowledgeHit, KnowledgeSearch, ToolUnavailable
 from .llm import LLM, LLMError, LLMUnavailable
 
@@ -215,11 +216,15 @@ class LLMAgent:
 
     # ── 노드: 이해 ───────────────────────────────────────────────────
     def _read_photo(self, s: State):
-        if not s.get("image") or self.vision is None:
+        if not s.get("image"):
+            return {"photo": None}
+        if self.vision is None:
+            # 연결 실수(LLMAgent 에 vision 을 안 넘김)를 로그로 드러낸다 — 응답은 200 이라 겉으로는 안 보임 (이슈 #2)
+            log.warning("photo_ignored_no_vision: LLMAgent(vision=...) 가 없어 대화 사진을 읽지 않음")
             return {"photo": None}
         try:
             f = self.vision.extract(s["image"])
-        except VisionUnavailable:
+        except vision_unavailable_types():  # 사본 · 백엔드 클래스 모두 (compat.py)
             return {"photo": None}  # 사진 없이 말로만 처리
         texts = ", ".join(t.text for t in f.texts) or "-"
         return {"photo": f"상태: {f.image_quality} / 글자: {texts} / 시설: {', '.join(f.facilities) or '-'}"}

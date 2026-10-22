@@ -12,15 +12,16 @@ SKALA AI 서비스 개발 Mini-project · 담당 R2 AI Engineer (흐름) 정유�
 | 구현 | 백엔드 규격 | 백엔드 자리 (`app/main.py`) | 지금 백엔드 기본값 |
 |---|---|---|---|
 | `LLMAgent` | `Agent.handle_message(ctx, message, image, selected_poi_id) -> AgentResult` | `create_app(agent=...)` | `RuleAgent` (키워드 규칙) |
-| `LLMVision` | `VisionExtractor.extract(image) -> VisionFeatures` | `create_app(vision=...)` | `NoVision` (항상 503) |
+| `LLMVision` | `VisionExtractor.extract(image) -> VisionFeatures` | `create_app(vision=...)` + `LLMAgent(vision=...)` | `NoVision` (항상 503) |
 | `rank_location` [제안] | `match_location` 과 같은 입력 · 출력 | (R4 판단) | 완전 일치 개수 |
 
 ```python
 # 백엔드 연결 예 — 백엔드 엔드포인트는 바꾸지 않는다
 from hangil_r2 import LLMAgent, LLMVision, OpenAILLM, MockKnowledgeSearch
 llm = OpenAILLM()
-app = create_app(agent=LLMAgent(llm, search_knowledge=MockKnowledgeSearch(), fallback=RuleAgent()),
-                 vision=LLMVision(llm))
+vision = LLMVision(llm)  # 같은 Vision 을 Agent(대화 사진) 와 create_app(사진 위치) 양쪽에 넣는다
+app = create_app(agent=LLMAgent(llm, search_knowledge=MockKnowledgeSearch(), vision=vision, fallback=RuleAgent()),
+                 vision=vision)
 ```
 
 ## 실행
@@ -29,7 +30,7 @@ app = create_app(agent=LLMAgent(llm, search_knowledge=MockKnowledgeSearch(), fal
 git clone https://github.com/team-onetruck/oneload_agent.git && cd oneload_agent
 python3 -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-pytest -q                                              # 37 passed — API 키 없이 (FakeLLM + 백엔드 지도 사본)
+pytest -q                                              # 43 passed — API 키 없이 (FakeLLM + 공유 지도 사본)
 python eval/run_eval.py agent                          # 평가 17문항 (FakeLLM)
 
 ```
@@ -47,12 +48,19 @@ git status                                            # .env 가 목록에 없�
 **백엔드와 맞는지 확인** (백엔드 저장소는 읽기만 함)
 
 ```bash
+# 같은 부모 폴더에 세 저장소를 둔다 (백엔드 README 와 같은 배치)
 git clone https://github.com/team-onetruck/oneload-backend.git ../oneload-backend
-uv run --project ../oneload-backend --with langgraph==1.2.16 python scripts/check_backend_compat.py ../oneload-backend
-# DB 가 있으면 실제 API 순서로 대화 · 사진 위치까지
+git clone https://github.com/team-onetruck/oneload-data.git ../oneload-data      # 공유 지도 (maps/)
+uv run --project ../oneload-backend --with langgraph==1.2.16 --with python-dotenv==1.2.4 \
+  python scripts/check_backend_compat.py ../oneload-backend
+# 지도 폴더를 따로 두었다면 --map-dir <폴더> (우선순위: --map-dir > MAP_DIR > ../oneload-data/maps)
+# DB 가 있으면 --e2e: 대화 · 사진 위치 · 위치 확정 + 대화 첨부 사진 읽기 + 사진 서버 장애 시 503 까지
 DATABASE_URL=postgresql+psycopg://hangil:hangil@localhost:54329/hangil_test \
-uv run --project ../oneload-backend --with langgraph==1.2.16 python scripts/check_backend_compat.py ../oneload-backend --e2e
+uv run --project ../oneload-backend --with langgraph==1.2.16 --with python-dotenv==1.2.4 \
+  python scripts/check_backend_compat.py ../oneload-backend --e2e
 ```
+검사 항목: 타입 스키마 · 허용 값 · **예외 클래스가 백엔드와 같은지** · R2 지도 사본(`mocks/maps/`)이 공유 지도(`oneload-data/maps/`)와 같은지.
+지도가 없거나 다르면 종료 코드 1 (성공으로 처리하지 않음). 백엔드 `tests/fixtures/maps/` 는 시험용이라 참고로만 비교한다.
 
 ## 구조
 
@@ -63,13 +71,14 @@ hangil_r2/
   vision.py         LLMVision — 사진 → 보이는 글자 · 시설
   llm.py            LLM 어댑터 (FakeLLM · OpenAILLM), 오류 2종 구분
   knowledge.py      R3 검색 · 시각표 도구 인터페이스 + Mock
+  compat.py         백엔드와 같은 클래스여야 하는 예외 고르기 (사진 장애 → 503)
   config.py         .env 만들기 · 읽기 · 키 확인 (python -m hangil_r2.config)
   ranker.py         [제안] match_location 개선안 (드문 문구 가중 · 오타 허용 · 동점 안내)
 prompts/            understand · compose · scene (v3) + CHANGELOG.md
-mocks/              maps/seoul-station.json (백엔드 사본) · knowledge.json (데모 문서) · timetable.json (가상)
+mocks/              maps/seoul-station.json (oneload-data 공유 지도 사본) · knowledge.json (데모 문서) · timetable.json (가상)
 eval/               agent_cases.csv (17문항) · run_eval.py
 scripts/            check_backend_compat.py
-tests/              agent 22 · vision 4 · ranker 7 · config 4 (파라미터 포함 37건)
+tests/              agent 25 · vision 7 · ranker 7 · config 4 (파라미터 포함 43건)
 docs/               FAQ.md · STEP05.md · localization.md · decisions.md · handoff.md
 ```
 
@@ -82,7 +91,7 @@ docs/               FAQ.md · STEP05.md · localization.md · decisions.md · ha
 
 ## 데이터 · 보안
 - `mocks/knowledge.json` 의 문구는 **데모**이며 실제 공항철도 이용 방법 · 요금이 아니다. 요금 문서는 일부러 없다 (요금 질문 → `cannot_answer`).
-- `mocks/maps/seoul-station.json` 은 백엔드 지도 사본. 층(B2 · B3 · B7)만 공식 확인, 나머지는 답사 전 임시값 (백엔드 README).
+- `mocks/maps/seoul-station.json` 은 `oneload-data/maps/` 공유 지도 사본. 층(B2 · B3 · B7)만 공식 확인, 나머지는 답사 전 임시값 (백엔드 README).
 - API 키는 `.env` 에만 둔다. 오류 로그에는 예외 종류만 남긴다. 사진은 저장하지 않는다.
 
 ## 알려진 한계 (2026-10-22)

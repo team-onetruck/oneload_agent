@@ -188,3 +188,46 @@ def test_allstop_destination_does_not_cite_express_doc(ctx):  # A-21 다른 열�
         and "doc-express-ticket" not in ids
         and "doc-allstop-ticket" in ids
     )
+
+
+# ── 연결 예제 그대로 조립했을 때 대화 첨부 사진을 실제로 읽는지 (이슈 #2) ─────────────────────
+class CountingLLM(FakeLLM):
+    """read_scene 호출 수와 understand 에 넘어간 photo 를 기록한다."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.scene_calls, self.photos = 0, []
+
+    def read_scene(self, image):
+        self.scene_calls += 1
+        return super().read_scene(image)
+
+    def understand(self, message, history, language, photo):
+        self.photos.append(photo)
+        return super().understand(message, history, language, photo)
+
+
+def test_faq_wiring_reads_message_photo(ctx):  # A-22 FAQ Q1 · handoff 예제와 같은 조립
+    from hangil_r2 import LLMVision
+
+    llm = CountingLLM(scene={"image_quality": "usable", "facilities": ["ticket_machine"]})
+    vision = LLMVision(llm)
+    a = LLMAgent(llm, search_knowledge=MockKnowledgeSearch(), vision=vision, fallback=None)
+    r = ask(a, ctx(slots=Slots(train_type="express")), "이거 뭐 눌러?", image=b"\xff\xd8\xff")
+    assert llm.scene_calls == 1 and llm.photos[-1] and "ticket_machine" in llm.photos[-1]
+    assert r.status == "answered"
+
+
+def test_missing_vision_is_logged_and_text_still_works(ctx, caplog):  # A-23 vision 을 빠뜨린 연결 → 로그로 드러남
+    llm = CountingLLM()
+    a = LLMAgent(llm, search_knowledge=MockKnowledgeSearch())
+    with caplog.at_level("WARNING", logger="hangil_r2.agent"):
+        r = ask(a, ctx(), "공항 가는 티켓 어디서 사?", image=b"\xff\xd8\xff")
+    assert llm.scene_calls == 0 and llm.photos[-1] is None
+    assert "photo_ignored_no_vision" in caplog.text and r.status == "needs_clarification"
+
+
+def test_text_only_does_not_warn(ctx, caplog):  # A-24 사진 없는 질문은 그대로, 경고 없음
+    with caplog.at_level("WARNING", logger="hangil_r2.agent"):
+        r = ask(agent(), ctx(), "공항 가는 티켓 어디서 사?")
+    assert r.status == "needs_clarification" and "photo_ignored_no_vision" not in caplog.text

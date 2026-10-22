@@ -1,6 +1,6 @@
 # FAQ — 한길 R2 (AI Agent · Vision)
 
-> 담당: R2 AI Engineer (흐름) 정유은 · 기준: oneload-backend `2502e65` (2026-10-22 호환 확인) · 저장소: `team-onetruck/oneload_agent`
+> 담당: R2 AI Engineer (흐름) 정유은 · 기준: oneload-backend `a82b7be` · oneload-data `606f648` (2026-10-22 호환 확인) · 저장소: `team-onetruck/oneload_agent`
 > 더 자세한 내용: 연결 [handoff.md](handoff.md) · 구조와 흐름 [STEP05.md](STEP05.md) · 결정 이유 [decisions.md](decisions.md) · 사진 위치 [localization.md](localization.md)
 
 ## 한눈에 보기
@@ -67,9 +67,12 @@ from hangil_r2 import LLMAgent, LLMVision, OpenAILLM, MockKnowledgeSearch
 from app.ai.rule_agent import RuleAgent
 
 llm = OpenAILLM()
-app.state.agent = LLMAgent(llm, search_knowledge=MockKnowledgeSearch(), fallback=RuleAgent())
-app.state.vision = LLMVision(llm)
+vision = LLMVision(llm)                             # 같은 Vision 하나를 두 곳에 넣는다
+agent = LLMAgent(llm, search_knowledge=MockKnowledgeSearch(), vision=vision, fallback=RuleAgent())
+app = create_app(agent=agent, vision=vision)
 ```
+- `create_app(vision=...)` → 사진 위치 `/localizations` 에서 사용
+- `LLMAgent(vision=...)` → 대화 `/messages` 에 첨부한 사진을 읽을 때 사용. **빠뜨리면 대화 사진은 읽지 않고 글자로만 답한다** (오류 없이 200 이라 놓치기 쉬움)
 백엔드 의존성에 `langgraph==1.2.16`, `langchain-openai==1.7.2`, `python-dotenv==1.2.4` 를 추가해야 한다. 자세한 내용은 [handoff.md](handoff.md).
 
 ### Q2. API 키는 어디에 넣나요?
@@ -81,7 +84,7 @@ app.state.vision = LLMVision(llm)
 ### Q3. 테스트 · 평가는 어떻게 돌리나요?
 ```bash
 pip install -r requirements.txt
-pytest -q                                      # 37건, API 키 불필요
+pytest -q                                      # 43건, API 키 불필요
 python eval/run_eval.py agent                  # 평가 17문항 (가짜 LLM)
 python eval/run_eval.py agent --llm openai     # 실제 LLM (키 필요)
 ```
@@ -91,11 +94,21 @@ python eval/run_eval.py agent --llm openai     # 실제 LLM (키 필요)
 
 ### Q5. 백엔드가 바뀌면 R2 코드는 어떻게 확인하나요?
 ```bash
+# 같은 부모 폴더에 세 저장소를 둔다 (백엔드 README 와 같은 배치)
+git clone https://github.com/team-onetruck/oneload-backend.git ../oneload-backend
+git clone https://github.com/team-onetruck/oneload-data.git ../oneload-data      # 공유 지도 (maps/)
 uv run --project ../oneload-backend --with langgraph==1.2.16 --with python-dotenv==1.2.4 \
-  python scripts/check_backend_compat.py ../oneload-backend          # 규격 비교
-# DB 가 있으면 --e2e 를 붙여 실제 API 순서로 대화 · 사진 위치까지 실행
+  python scripts/check_backend_compat.py ../oneload-backend
+# 지도 폴더를 따로 두었다면 --map-dir <폴더> (우선순위: --map-dir > MAP_DIR > ../oneload-data/maps)
+# DB 가 있으면 --e2e: 대화 · 사진 위치 · 위치 확정 + 대화 첨부 사진 읽기 + 사진 서버 장애 시 503 까지
+DATABASE_URL=postgresql+psycopg://hangil:hangil@localhost:54329/hangil_test \
+uv run --project ../oneload-backend --with langgraph==1.2.16 --with python-dotenv==1.2.4 \
+  python scripts/check_backend_compat.py ../oneload-backend --e2e
 ```
+검사 항목: 타입 스키마 · 허용 값 · **예외 클래스가 백엔드와 같은지** · R2 지도 사본(`mocks/maps/`)이 공유 지도(`oneload-data/maps/`)와 같은지.
+지도가 없거나 다르면 종료 코드 1 (성공으로 처리하지 않음). 백엔드 `tests/fixtures/maps/` 는 시험용이라 참고로만 비교한다.
 `hangil_r2/backend/` 는 백엔드 규격 **사본**이라 직접 고치지 않는다. 다르다고 나오면 다시 복사한다.
+단, 사본 클래스는 모양이 같아도 백엔드와 **다른 클래스**다. 백엔드가 `except` 로 잡는 예외는 `hangil_r2/compat.py` 가 백엔드의 진짜 클래스를 골라 던진다.
 
 ## 동작 방식
 
@@ -120,7 +133,8 @@ R3 자료로 두 열차의 차이를 설명하고 다시 고르게 한다. 비�
 
 ### Q10. LLM이 고장 나면?
 - 대화: 백엔드 RuleAgent 가 대신 답한다. 서비스는 멈추지 않는다.
-- 사진: 백엔드가 503 을 내고, 화면이 '직접 위치 고르기'로 넘어간다.
+- 사진 위치: 백엔드가 503 `AI_SERVICE_UNAVAILABLE` 을 내고, 화면이 '직접 위치 고르기'로 넘어간다 (`check_backend_compat.py --e2e` 로 확인).
+- 대화에 붙인 사진: 사진 없이 말로만 답한다.
 - 사진 응답 형식이 깨지면 글자를 읽지 못한 것으로 처리 → 재촬영 안내 (위치를 추측하지 않음).
 
 ### Q11. RuleAgent와 무엇이 다른가요?
@@ -165,8 +179,8 @@ R2는 더 정확한 방식 `rank_location`(드문 글자 우선 · 오타 허용
 
 | 항목 | 상태 |
 |---|---|
-| 백엔드 규격 일치 · 실제 API 흐름 | 완료 (`2502e65` 기준) |
-| 테스트 · 평가 (가짜 LLM) | 37건 통과 · 17/17 |
+| 백엔드 규격 일치 · 실제 API 흐름 | 완료 (`a82b7be` 기준, 사진 장애 503 · 대화 사진 읽기 포함) |
+| 테스트 · 평가 (가짜 LLM) | 43건 통과 · 17/17 |
 | 실제 LLM 평가 | 측정 전 |
 | 백엔드에 실제 연결 | R4 작업 대기 (Q1) |
 | R3 실제 자료 | 대기 (지금은 데모 문서) |
