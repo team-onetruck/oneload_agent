@@ -11,3 +11,5 @@ E-09,검증안된POI,ko,라운지,poi-unverified-lounge,needs_clarification,
 E-10,범위밖,ko,오늘 날씨 어때?,,denied,
 E-11,길안내,en,where is exit 1?,,destination_set,poi-exit-1
 E-12,이용방법,en,how do I get a deposit refund?,,answered,
+E-13,승차권(슬롯포함),ko,공항철도 직통열차 표 어디서 사?,,destination_set,poi-ticket-express
+E-14,승차권방법(슬롯없음),ko,공항철도 티켓 어떻게 사?,,needs_clarification,

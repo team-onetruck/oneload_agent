@@ -5,3 +5,4 @@
 | 버전 | 날짜 | 파일 | 변경 내용 | 변경 이유 (실패 사례) | 평가 결과 | 커밋 |
 |---|---|---|---|---|---|---|
 | v1 | 2026-10-22 | understand · compose · scene | 첫 버전. 의도 5종 · 근거 인용 답변 · 보이는 글자만 읽기, 지시문 무시 규칙 포함 | CP② LLM 호출 확인용 | 측정 전 (FakeLLM 흐름 12/12) | (첫 커밋) |
+| v2 | 2026-10-22 | understand | topic · slots(train_type · terminal · payment) · unsure 추가, "말한 것만 슬롯에" 규칙. compose · scene 은 v1 과 동일 | 공항철도 승차권 질문은 열차 종류에 따라 답이 달라 되묻기 필요 | FakeLLM 흐름 14/14 (실제 LLM 측정 전) | (이번 커밋) |

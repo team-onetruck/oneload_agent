@@ -61,7 +61,10 @@ class MockKnowledgeSearch:
 
 
 class MockPoiSearch:
-    """이름 · 별칭 포함 여부로 찾는 가짜 POI 검색. filters: {"verified": bool, "poi_id": str}."""
+    """이름 · 별칭 포함 여부로 찾는 가짜 POI 검색.
+
+    filters: {"verified": bool, "poi_id": str, "category": str}. query 가 비면 필터만으로 고른다.
+    """
 
     def __init__(self, path: str = "pois.json"):
         self._pois = [POI(**p) for p in _load(path)["pois"]]
@@ -74,8 +77,10 @@ class MockPoiSearch:
                 continue
             if "verified" in filters and p.verified != filters["verified"]:
                 continue
+            if "category" in filters and p.category != filters["category"]:
+                continue
             names = [p.name_ko, p.name_en or "", *p.aliases]
-            if "poi_id" in filters or any(_norm(n) and (_norm(n) in q or q in _norm(n)) for n in names):
+            if not q or any(_norm(n) and (_norm(n) in q or q in _norm(n)) for n in names):
                 out.append(p)
         return out
 

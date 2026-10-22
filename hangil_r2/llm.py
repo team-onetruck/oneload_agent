@@ -22,6 +22,8 @@ from .contracts import ChatTurn, KnowledgeHit
 PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
 INTENTS = ("navigate_to_poi", "ask_procedure", "ticket_purchase_and_navigation", "report_lost", "out_of_scope")
+TOPICS = ("ticket", "card", "transfer", "other")  # 이용 방법 주제. ticket 이면 열차 종류 슬롯이 필요
+TRAIN_TYPES = ("express", "general")  # 공항철도 직통열차 · 일반열차
 OBJECT_KINDS = ("stairs", "escalator", "elevator", "ticket_machine", "gate", "platform", "refund_machine", "information_desk")
 
 
@@ -40,7 +42,7 @@ class LLM(Protocol):
 
 
 def prompt_version() -> str:
-    return os.getenv("PROMPT_VERSION", "v1")
+    return os.getenv("PROMPT_VERSION", "v2")
 
 
 def load_prompt(name: str) -> Template:
@@ -62,9 +64,18 @@ def parse_json(text: str) -> dict | list:
 
 
 def validate_understanding(out: object) -> dict:
+    """LLM 해석 결과를 규격에 맞게 정리. 허용 값 밖이면 버린다(None) — 슬롯을 지어내지 않게."""
     if not isinstance(out, dict) or out.get("intent") not in INTENTS:
         raise LLMError(f"의도 분류 규격 위반: {out!r}")
+    raw_slots = out.get("slots") if isinstance(out.get("slots"), dict) else {}
+    slots = {
+        "train_type": raw_slots.get("train_type") if raw_slots.get("train_type") in TRAIN_TYPES else None,
+        "terminal": str(raw_slots["terminal"])[:30] if raw_slots.get("terminal") else None,
+        "payment": str(raw_slots["payment"])[:30] if raw_slots.get("payment") else None,
+    }
     return {"intent": out["intent"], "blocked": bool(out.get("blocked", False)),
+            "topic": out.get("topic") if out.get("topic") in TOPICS else None,
+            "slots": slots, "unsure": bool(out.get("unsure", False)),
             "poi_query": out.get("poi_query") or None, "knowledge_query": out.get("knowledge_query") or None}
 
 
@@ -89,25 +100,33 @@ class FakeLLM:
         self.scene = scene or {"texts": [], "objects": []}
         self.broken = broken  # True 면 형식 위반 응답을 흉내
 
+    TICKET = re.compile(r"티켓|승차권|ticket|표(\s|$|를|는|사|살)")
+    UNSURE = ("모르", "not sure", "don't know")
+
     def understand(self, message, history, language):
         if self.broken:
             raise LLMError("fake broken output")
         m = message.lower()
+        base = {"blocked": False, "topic": None, "unsure": any(w in m for w in self.UNSURE),
+                "slots": {"train_type": "express" if ("직통" in m or "express" in m)
+                          else "general" if ("일반" in m or "regular" in m) else None,
+                          "terminal": None, "payment": None},
+                "poi_query": None, "knowledge_query": None}
         if any(w in m for w in self.UNSAFE):
-            return {"intent": "out_of_scope", "blocked": True, "poi_query": None, "knowledge_query": None}
+            return {**base, "intent": "out_of_scope", "blocked": True}
         if any(w in m for w in self.LOST):
-            return {"intent": "report_lost", "blocked": False, "poi_query": None, "knowledge_query": None}
-        proc = any(w in m for w in self.PROCEDURE)
-        nav = any(w in m for w in self.NAVIGATE)
-        if ("티켓" in m or "ticket" in m) and ("어디" in m or "where" in m):
+            return {**base, "intent": "report_lost"}
+        ticket = bool(self.TICKET.search(m))
+        topic = "ticket" if ticket else "card" if any(w in m for w in ("보증금", "환급", "refund", "deposit")) else None
+        if ticket and ("어디" in m or "where" in m):
             intent = "ticket_purchase_and_navigation"
-        elif proc:
+        elif any(w in m for w in self.PROCEDURE):
             intent = "ask_procedure"
-        elif nav or history:  # 추가 질문에 대한 짧은 대답("직통열차")은 길 안내로 이어 봄
+        elif any(w in m for w in self.NAVIGATE) or history:  # 추가 질문에 대한 짧은 대답은 길 안내로 이어 봄
             intent = "navigate_to_poi"
         else:
-            intent = "out_of_scope"
-        return {"intent": intent, "blocked": False,
+            intent = "out_of_scope"  # 되묻는 중이면 agent 가 이전 의도로 이어 붙인다
+        return {**base, "intent": intent, "topic": topic,
                 "poi_query": message if intent in ("navigate_to_poi", "ticket_purchase_and_navigation") else None,
                 "knowledge_query": message if intent in ("ask_procedure", "ticket_purchase_and_navigation") else None}
 
@@ -141,7 +160,7 @@ class OpenAILLM:
     def understand(self, message, history, language):
         hist = "\n".join(f"{t.role}: {t.text}" for t in history[-6:]) or "(없음)"
         prompt = load_prompt("understand").substitute(message=message, history=hist, language=language)
-        return validate_understanding(parse_json(self._ask(prompt)))
+        return validate_understanding(parse_json(self._ask(prompt)))  # v1 프롬프트면 슬롯은 모두 None
 
     def compose(self, question, hits, language):
         docs = "\n".join(f"[{i}] {h.title}: {h.excerpt}" for i, h in enumerate(hits, start=1))

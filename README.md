@@ -21,8 +21,8 @@ Agent 가 쓰는 Tool 은 `search_knowledge`(R3) · `search_pois`(R4) 두 개뿐
 git clone https://github.com/lea5063/hangil-r2-agent.git && cd hangil-r2-agent
 python3 -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-pytest -q                                              # 32 passed — API 키 없이 (FakeLLM + Mock Tool)
-python eval/run_eval.py agent                          # 질문 평가 12문항 (FakeLLM)
+pytest -q                                              # 39 passed — API 키 없이 (FakeLLM + Mock Tool)
+python eval/run_eval.py agent                          # 질문 평가 14문항 (FakeLLM)
 
 # 실제 LLM (키 필요)
 cp .env.example .env                                   # OPENAI_API_KEY 입력
@@ -35,14 +35,14 @@ python eval/run_eval.py agent --llm openai
 ```
 hangil_r2/
   contracts.py      명세 10장 타입 + 출력 규격 규칙 (Pydantic)
-  agent.py          handle_message — LangGraph 7노드
+  agent.py          handle_message — LangGraph 10노드 (슬롯 · 되묻기 포함)
   localization.py   estimate_location — 장면 읽기 + 표지판 · 시설 대조 점수
   llm.py            LLM 어댑터 (FakeLLM · OpenAILLM), 오류 2종 구분
   tools.py          Tool · 지도 인터페이스 + Mock
-prompts/            understand · compose · scene (v1) + CHANGELOG.md
+prompts/            understand · compose · scene (v1 · v2, 기본 v2) + CHANGELOG.md
 mocks/              명세 8.3 · 8.4 · 8.5 예시 기반 가상 데이터
 eval/               agent_cases.csv · run_eval.py
-tests/              agent 12 · localization 11 · contracts 3 (파라미터 포함 32건)
+tests/              agent 19 · localization 11 · contracts 3 (파라미터 포함 39건)
 docs/               STEP05.md · localization.md · decisions.md · handoff.md
 ```
 

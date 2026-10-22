@@ -27,11 +27,16 @@ est = localizer.estimate_location(image_bytes, map_id, map_version,
 - 세션 state 전이는 Backend 가 `AgentResponse.status` 를 보고 결정한다 (명세 4장):
   `needs_clarification` → needs_clarification, `destination_set` → needs_location 또는 ready_to_navigate, `needs_location` → needs_location, 나머지 → 변화 없음.
 - `destination.poi_id` 는 Backend 가 한 번 더 검증한다 (명세 8.5). R2 도 verified POI 만 쓰지만 이중 확인 유지.
+- **`AgentResponse.slots` 를 세션에 저장했다가 다음 `/messages` 때 `SessionContext.slots` 로 그대로 넘겨 주세요** (D-16). 이게 없으면 "직통열차" 같은 짧은 대답을 이전 질문과 잇지 못합니다.
+- 열차 종류 버튼(`selected_poi_id: null`)은 버튼 글자를 `message` 로 보내면 됩니다 (D-17).
+- `search_pois` 에 `filters={"category": ...}` 지원 필요 (D-19).
 - `handle_message` 는 동기 함수다. FastAPI 에서는 `run_in_threadpool` + 15초 타임아웃으로 감싼다.
 - 합의 필요 항목: `docs/decisions.md` D-02 · D-08 ~ D-11.
 
 ## R3 (RAG) — 맞출 형식
 - `search_knowledge(query, language, context) -> list[KnowledgeHit]` (명세 10장 필드 그대로)
+- 공항철도 승차권 자료 요청: 직통열차 구매 방법 · 일반열차 구매 방법 · **두 열차 비교**(되묻기 "잘 모르겠어요" 설명용) · 결제 수단 · 환급. 항목마다 공식 출처 URL 과 확인일
+- R2 는 검색어에 슬롯 이름을 붙여 보냄 (예: "직통열차 승차권 구매 방법"), `context["slots"]` 로도 전달
 - `excerpt` 가 비어 있으면 근거로 쓰지 않는다. 0건이면 R2 는 `needs_review` 로 보류한다.
 - 대역: `hangil_r2/tools.py MockKnowledgeSearch` → 같은 시그니처 함수로 교체하면 끝.
 
@@ -42,7 +47,7 @@ python eval/run_eval.py agent --llm openai            # 질문 평가 (eval/agen
 python eval/run_eval.py localization --llm openai     # 사진 평가 (eval/photos/<node_id>/*.jpg)
 pytest -q                                             # 기능 테스트 (키 불필요)
 ```
-- 프롬프트 버전 비교: `.env` 의 `PROMPT_VERSION=v2` 처럼 바꾸고 같은 평가 재실행 → `prompts/CHANGELOG.md` 에 기록
+- 프롬프트 버전 비교: `.env` 의 `PROMPT_VERSION=v1` · `v2` 처럼 바꾸고 같은 평가 재실행 → `prompts/CHANGELOG.md` 에 기록
 - 위치 기준값 실험: `AMBIGUITY_MARGIN` (기본 0.1)
 
 ## 남은 일 (R2)

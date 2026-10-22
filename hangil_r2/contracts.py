@@ -34,6 +34,8 @@ class SessionContext(_Strict):
     destination: dict | None = None  # {"poi_id": ...}
     confirmed_location: dict | None = None  # {"node_id": ..., "floor_id": ...}
     recent_messages: list[ChatTurn] = Field(default_factory=list)  # [제안] 최근 6턴
+    # [제안] 지난 응답의 AgentResponse.slots 를 Backend 가 그대로 돌려줌 (되묻기 중인 의도 · 채운 슬롯)
+    slots: dict[str, str] = Field(default_factory=dict)
 
 
 # ── Tool 결과: R3 · R4 → Agent ─────────────────────────────────────────
@@ -94,6 +96,9 @@ class AgentResponse(_Strict):
     suggested_replies: list[SuggestedReply] = Field(default_factory=list, max_length=4)
     sources: list[Source] = Field(default_factory=list, max_length=4)
     next_action: NextAction
+    # [제안] 대화 슬롯. Backend 는 저장했다가 다음 SessionContext.slots 로 넘긴다
+    # 예: {"train_type": "express"} / 되묻는 중이면 {"pending_intent": "...", "pending_topic": "ticket"}
+    slots: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _rules(self) -> "AgentResponse":

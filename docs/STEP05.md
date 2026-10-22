@@ -14,7 +14,7 @@ flowchart LR
   end
 
   subgraph R2[R2 · hangil_r2]
-    AG["Agent.handle_message<br/>LangGraph 7노드"]
+    AG["Agent.handle_message<br/>LangGraph 10노드"]
     VL["VisualLocalizer.estimate_location<br/>장면 읽기 + 대조 점수"]
     PR[["prompts/<br/>understand · compose · scene"]]
   end
@@ -34,15 +34,27 @@ flowchart LR
 
 **A. 질문 → 목적지 (`handle_message`)**
 1. 입력: 질문 + `SessionContext`(언어 · 지도 · 최근 대화) + 화면에서 고른 `selected_poi_id`
-2. `understand` (LLM): 의도 5종 + 검색어 + 위험 여부
-3. 분기
-   - 위험 · 범위 밖 → `denied`
+2. `understand` (LLM): 의도 5종 + 주제 + 슬롯(열차 종류 · 행선지 · 결제 수단) + "잘 모르겠어요" 여부 + 검색어 + 위험 여부
+3. `fill_slots`: 이전 슬롯과 합치고, 되묻던 질문의 짧은 대답("직통열차")을 원래 의도로 이어 붙인다. 승차권 주제면 `train_type` 이 필수
+4. 분기
+   - 위험 · 범위 밖 → `denied` (되묻는 중이어도 이어 붙이지 않음)
    - "길 잘못 든 것 같아" → `needs_location`
    - 화면 선택 → `verify_selected`: `search_pois` 로 verified 확인
+   - 필수 슬롯 빠짐 → `ask_slot`: "직통열차와 일반열차 중 어떤 승차권인가요?" [직통열차] [일반열차] [잘 모르겠어요]
+   - "잘 모르겠어요" → `explain_options`: R3 비교 자료로 차이 설명 + 다시 선택 (자료 없으면 설명 없이 선택만)
+   - 되묻기 2회 초과 → `find_poi`: 매표소 목록 버튼으로 직접 선택
    - 길 안내 → `find_poi`: 검증된 POI 1개면 `destination_set`, 여러 개면 `needs_clarification` + 추천 버튼, 0개면 다시 묻기
    - 이용 방법 → `retrieve`(R3) → `compose`(LLM, 자료 내용만 · 번호 인용) → `answered` / 근거 없으면 `needs_review`
-   - 티켓 구매 + 길 안내 → 위 두 단계를 차례로 → 답변 + 목적지
-4. 출력 규격 검증(Pydantic) 후 Backend 로 반환
+   - 티켓 구매 + 길 안내 → 위 두 단계를 차례로 → 답변 + 목적지 (검색어에 슬롯 이름을 붙여 해당 열차 자료 · 매표소만 찾음)
+5. 출력 규격 검증(Pydantic) 후 Backend 로 반환. 되묻는 중이면 `slots` 에 `pending_intent` 를 담아 Backend 가 다음 요청에 돌려줌
+
+**대화 예시 (공항철도 승차권)**
+
+| 턴 | 사용자 | 노드 | 응답 |
+|---|---|---|---|
+| 1 | 공항 가는 티켓 어디서 사? | understand → fill_slots → ask_slot | needs_clarification · [직통열차] [일반열차] [잘 모르겠어요] · slots: pending |
+| 2 | 잘 모르겠어요 | → explain_options | needs_clarification · 비교 자료 요약 [1] · [직통열차] [일반열차] |
+| 3 | 직통열차 | → retrieve → compose → find_poi | destination_set · 구매 방법 [1] + "직통열차 승차권 판매처로 안내할게요" · slots: {train_type: express} |
 
 **B. 사진 → 위치 후보 (`estimate_location`)**: [docs/localization.md](localization.md)
 
@@ -79,7 +91,8 @@ flowchart LR
   "destination": {"poi_id": "verified POI 만", "display_name": "..."} | null,
   "suggested_replies": [{"label": "...", "selected_poi_id": "..." | null}],
   "sources": [{"document_id": "...", "title": "...", "source_url": "...", "verified_at": "..."}],
-  "next_action": "reply | locate | navigate | none"
+  "next_action": "reply | locate | navigate | none",
+  "slots": {"train_type": "express | general", "pending_intent": "되묻는 중일 때만", "pending_topic": "..."}
 }
 ```
 

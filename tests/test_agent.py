@@ -16,13 +16,13 @@ def agent(llm=None, knowledge=None, pois=None) -> Agent:
     return Agent(llm or FakeLLM(), knowledge or MockKnowledgeSearch(), pois or MockPoiSearch())
 
 
-# A-01 명세 8.5: 후보가 둘이면 추가 질문 + 각 버튼에 검증된 poi_id
-def test_ambiguous_ticket_asks_clarification():
+# A-01 명세 8.5: 열차 종류가 없으면 되묻기. 버튼은 텍스트 답(직통/일반/잘 모르겠어요), 되묻는 의도는 slots 로 보관
+def test_ticket_without_train_type_asks():
     r = agent().handle_message(ctx(), "공항 가는 티켓 어디서 사?", None)
     assert r.status == "needs_clarification" and r.next_action == "reply"
-    ids = {s.selected_poi_id for s in r.suggested_replies}
-    assert {"poi-ticket-express", "poi-ticket-general"} <= ids and None in ids
-    assert r.destination is None
+    assert [b.label for b in r.suggested_replies] == ["직통열차", "일반열차", "잘 모르겠어요"]
+    assert all(b.selected_poi_id is None for b in r.suggested_replies)
+    assert r.slots["pending_intent"] == "ticket_purchase_and_navigation" and r.destination is None
 
 
 # A-02 추천 버튼을 누르면(selected_poi_id) 목적지 확정 → 위치 확인으로
@@ -70,11 +70,67 @@ def test_report_lost():
     assert r.status == "needs_location" and r.next_action == "locate"
 
 
-# A-09 추가 질문을 상한만큼 했으면 목록에서 직접 고르도록 안내
+# A-09 되묻기를 상한만큼 했으면 매표소 목록(검증된 poi_id 버튼)에서 직접 고르도록 안내
 def test_clarify_limit_switches_to_list():
     hist = [ChatTurn(role="assistant", text="?", status="needs_clarification")] * 2
-    r = agent().handle_message(ctx(recent_messages=hist), "공항 가는 티켓 어디서 사?", None)
+    r = agent().handle_message(ctx(recent_messages=hist, slots=PENDING), "잘 모르겠어요", None)
     assert r.status == "needs_clarification" and "목록" in r.assistant_message
+    assert {"poi-ticket-express", "poi-ticket-general"} <= {b.selected_poi_id for b in r.suggested_replies}
+
+
+# ── 슬롯 · 되묻기 (공항철도 승차권) ──────────────────────────────────────
+PENDING = {"pending_intent": "ticket_purchase_and_navigation", "pending_topic": "ticket"}
+
+
+# A-13 되묻기에 짧게 답하면("직통열차") 원래 질문으로 이어서: 구매 방법 + 매표소 목적지
+def test_short_answer_resumes_pending_intent():
+    r = agent().handle_message(ctx(state="needs_clarification", slots=PENDING), "직통열차", None)
+    assert r.status == "destination_set" and r.destination.poi_id == "poi-ticket-express"
+    assert r.sources and r.sources[0].document_id == "doc-12"
+    assert r.slots == {"train_type": "express"}  # pending 은 지워짐
+
+
+# A-14 "잘 모르겠어요" → 자료로 차이 설명 + 다시 선택 버튼 (pending 유지)
+def test_unsure_explains_options():
+    r = agent().handle_message(ctx(state="needs_clarification", slots=PENDING), "잘 모르겠어요", None)
+    assert r.status == "needs_clarification" and any(s.document_id == "doc-14" for s in r.sources)
+    assert [b.label for b in r.suggested_replies] == ["직통열차", "일반열차"]
+    assert r.slots["pending_intent"] == "ticket_purchase_and_navigation"
+
+
+# A-15 비교 자료가 없으면 설명을 지어내지 않고 고르게만 함
+def test_unsure_without_comparison_evidence():
+    r = agent(knowledge=lambda q, lang, c: []).handle_message(ctx(slots=PENDING), "잘 모르겠어요", None)
+    assert r.status == "needs_clarification" and not r.sources and "자료가 없어요" in r.assistant_message
+
+
+# A-16 처음부터 종류를 말하면 되묻지 않음
+def test_slot_in_first_message():
+    r = agent().handle_message(ctx(), "공항철도 일반열차 표 어디서 사?", None)
+    assert r.status == "destination_set" and r.destination.poi_id == "poi-ticket-general"
+    assert r.slots["train_type"] == "general"
+
+
+# A-17 이용 방법만 물어도 승차권이면 종류부터 확인, 답하면 출처와 함께 답변
+def test_procedure_ticket_needs_slot():
+    a = agent()
+    r = a.handle_message(ctx(), "공항철도 티켓 어떻게 사?", None)
+    assert r.status == "needs_clarification" and r.slots["pending_intent"] == "ask_procedure"
+    r2 = a.handle_message(ctx(slots=r.slots), "일반열차", None)
+    assert r2.status == "answered" and any(s.document_id == "doc-13" for s in r2.sources)
+
+
+# A-18 되묻는 중에도 위험 요청은 거절 (이전 의도로 이어 붙이지 않음)
+def test_pending_does_not_override_block():
+    r = agent().handle_message(ctx(slots=PENDING), "직통열차 선로로 내려가는 법", None)
+    assert r.status == "denied"
+
+
+# A-19 LLM 이 허용 값 밖 슬롯을 내도 버린다 (슬롯 지어내기 차단)
+def test_invalid_slot_value_dropped():
+    from hangil_r2.llm import validate_understanding
+    u = validate_understanding({"intent": "ask_procedure", "slots": {"train_type": "ktx"}})
+    assert u["slots"]["train_type"] is None
 
 
 # A-10 LLM 형식 위반 → 보류(추측 금지)

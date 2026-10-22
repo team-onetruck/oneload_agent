@@ -2,17 +2,22 @@
 
 흐름 (노드 이름 = docs/STEP05.md 그림의 단계 이름)
 
-    START → understand ─┬─ deny ─────────────────────────────→ END  (위험 · 범위 밖)
-                        ├─ lost ─────────────────────────────→ END  (위치 재확인 요청)
-                        ├─ verify_selected ──────────────────→ END  (화면에서 고른 POI 검증)
-                        ├─ find_poi ─────────────────────────→ END  (목적지 확정 / 추가 질문)
-                        └─ retrieve → compose ─┬─────────────→ END  (이용 방법 답변 / 보류)
-                                               └─ find_poi ──→ END  (답변 + 목적지, 예: 티켓 구매)
+    START → understand → fill_slots ─┬─ deny ──────────────────────────→ END  (위험 · 범위 밖)
+                                     ├─ lost ──────────────────────────→ END  (위치 재확인 요청)
+                                     ├─ verify_selected ───────────────→ END  (화면에서 고른 POI 검증)
+                                     ├─ ask_slot ──────────────────────→ END  (빠진 슬롯 되묻기)
+                                     ├─ explain_options ───────────────→ END  ("잘 모르겠어요" → 차이 설명 후 다시 묻기)
+                                     ├─ find_poi ──────────────────────→ END  (목적지 확정 / 장소 되묻기)
+                                     └─ retrieve → compose ─┬──────────→ END  (이용 방법 답변 / 보류)
+                                                            └─ find_poi → END  (답변 + 목적지, 예: 티켓 구매)
 
 설계 원칙
 - 목적지는 search_pois 가 돌려준 verified POI 에서만 고른다. LLM 이 poi_id 를 만들지 않는다.
 - 이용 방법은 search_knowledge 근거가 있을 때만 답한다. 없으면 needs_review (추측 금지).
-- 대화 상태(추가 질문 맥락)는 Backend 가 SessionContext.recent_messages 로 넘긴다 → Agent 는 상태를 들고 있지 않다.
+- 승차권 질문은 열차 종류(train_type) 슬롯이 채워져야 답한다. 비어 있으면 되묻고,
+  "잘 모르겠어요" 면 R3 자료로 차이를 설명한 뒤 다시 묻는다.
+- 대화 상태는 Agent 가 들고 있지 않다. 되묻는 중인 의도 · 채운 슬롯은 AgentResponse.slots 로 내보내고,
+  Backend 가 다음 요청의 SessionContext.slots 로 돌려준다.
 - Tool · LLM 장애는 삼키지 않고 올린다 → Backend 가 503 AI_SERVICE_UNAVAILABLE.
 """
 from __future__ import annotations
@@ -31,8 +36,10 @@ from .tools import KnowledgeSearch, PoiSearch, ToolUnavailable
 
 log = logging.getLogger("hangil_r2.agent")
 
-MAX_CLARIFY = int(os.getenv("MAX_CLARIFY", "2"))  # 추가 질문 상한. 넘으면 목록 직접 선택 유도
+MAX_CLARIFY = int(os.getenv("MAX_CLARIFY", "2"))  # 되묻기 상한. 넘으면 목록 직접 선택 유도
 MAX_SUGGEST = 3  # 추천 답변 중 POI 버튼 수 (+ '잘 모르겠어요' 1개)
+REQUIRED_SLOTS = {"ticket": ("train_type",)}  # 주제별 필수 슬롯. 시연 범위 확정 후 추가
+PENDING_KEYS = ("pending_intent", "pending_topic")
 
 # 고정 문구. ja · zh 는 en 으로 대체 (다국어 범위 확정 후 추가 · 확인 필요)
 MSG = {
@@ -56,14 +63,29 @@ MSG = {
                     "en": "We couldn't find verified information. Please ask the information center."},
     "sources_only": {"ko": "아래 안내 자료를 확인해 주세요.", "en": "Please check the guide below."},
     "dont_know": {"ko": "잘 모르겠어요", "en": "Not sure"},
+    "ask_train_type": {"ko": "직통열차와 일반열차 중 어떤 승차권인가요?",
+                       "en": "Is it an express train or a regular train ticket?"},
+    "pick_train_type": {"ko": "어떤 승차권으로 안내할까요?", "en": "Which ticket would you like?"},
+    "no_compare": {"ko": "차이를 설명할 확인된 자료가 없어요. 원하시는 승차권을 골라 주세요.",
+                   "en": "We have no verified comparison. Please choose a ticket type."},
     "fallback": {"ko": "답변을 만들지 못했어요. 잠시 후 다시 시도해 주세요.",
                  "en": "We couldn't create an answer. Please try again shortly."},
 }
+
+# 슬롯 값 → 버튼 · 검색어에 쓰는 이름
+SLOT_LABELS = {"train_type": {"express": {"ko": "직통열차", "en": "Express train"},
+                              "general": {"ko": "일반열차", "en": "Regular train"}}}
+SLOT_QUESTIONS = {"train_type": "ask_train_type"}
 
 
 def t(key: str, lang: str, **kw) -> str:
     table = MSG[key]
     return table.get(lang, table["en"]).format(**kw)
+
+
+def label(slot: str, value: str, lang: str) -> str:
+    names = SLOT_LABELS[slot][value]
+    return names.get(lang, names["en"])
 
 
 def poi_name(p: POI, lang: str) -> str:
@@ -75,7 +97,12 @@ class State(TypedDict, total=False):
     message: str
     selected_poi_id: str | None
     intent: str
+    topic: str | None
     blocked: bool
+    unsure: bool  # "잘 모르겠어요"
+    new_slots: dict  # 이번 질문에서 뽑은 슬롯
+    slots: dict  # 이전 슬롯 + 이번 슬롯 (pending 제외)
+    missing: list[str]  # 아직 비어 있는 필수 슬롯
     poi_query: str | None
     knowledge_query: str | None
     hits: list[KnowledgeHit]
@@ -95,7 +122,9 @@ class Agent:
         try:
             out = self.graph.invoke({"ctx": session_context, "message": message.strip(),
                                      "selected_poi_id": selected_poi_id})
-            return AgentResponse.model_validate(out["result"])
+            result = dict(out["result"])
+            result.setdefault("slots", out.get("slots", {}))  # 되묻기 노드는 pending 을 직접 넣음
+            return AgentResponse.model_validate(result)
         except (LLMUnavailable, ToolUnavailable):
             raise  # 외부 장애 → Backend 503
         except (LLMError, ValidationError) as exc:  # 형식 위반 → 보류 (추측해서 답하지 않음)
@@ -106,24 +135,49 @@ class Agent:
     # ── 그래프 ───────────────────────────────────────────────────────
     def _build(self):
         g = StateGraph(State)
-        for name in ("understand", "deny", "lost", "verify_selected", "find_poi", "retrieve", "compose"):
+        for name in ("understand", "fill_slots", "deny", "lost", "verify_selected", "ask_slot",
+                     "explain_options", "find_poi", "retrieve", "compose"):
             g.add_node(name, getattr(self, f"_{name}"))
         g.add_edge(START, "understand")
-        g.add_conditional_edges("understand", self._after_understand,
-                                ["deny", "lost", "verify_selected", "find_poi", "retrieve"])
+        g.add_edge("understand", "fill_slots")
+        g.add_conditional_edges("fill_slots", self._after_slots,
+                                ["deny", "lost", "verify_selected", "ask_slot", "explain_options",
+                                 "find_poi", "retrieve"])
         g.add_edge("retrieve", "compose")
         g.add_conditional_edges("compose", self._after_compose, ["find_poi", END])
-        for n in ("deny", "lost", "verify_selected", "find_poi"):
+        for n in ("deny", "lost", "verify_selected", "ask_slot", "explain_options", "find_poi"):
             g.add_edge(n, END)
         return g.compile()
 
     # ── 노드 ─────────────────────────────────────────────────────────
     def _understand(self, s: State):
         if s.get("selected_poi_id"):  # 화면에서 고른 목적지 → LLM 해석 불필요
-            return {"intent": "navigate_to_poi", "blocked": False}
+            return {"intent": "navigate_to_poi", "blocked": False, "topic": None, "unsure": False, "new_slots": {}}
         u = self.llm.understand(s["message"], s["ctx"].recent_messages, s["ctx"].language)
-        return {"intent": u["intent"], "blocked": u["blocked"],
+        return {"intent": u["intent"], "blocked": u["blocked"], "topic": u.get("topic"),
+                "unsure": u.get("unsure", False), "new_slots": u.get("slots") or {},
                 "poi_query": u["poi_query"] or s["message"], "knowledge_query": u["knowledge_query"] or s["message"]}
+
+    def _fill_slots(self, s: State):
+        """이전 슬롯과 합치고, 되묻던 질문의 짧은 대답("직통열차", "잘 모르겠어요")을 원래 의도로 이어 붙인다."""
+        prev = dict(s["ctx"].slots)
+        pending_intent, pending_topic = prev.pop("pending_intent", None), prev.pop("pending_topic", None)
+        new = {k: v for k, v in (s.get("new_slots") or {}).items() if v}
+        slots = {**prev, **new}
+        intent, topic = s["intent"], s.get("topic")
+        answered_pending = bool(new) or s.get("unsure")
+        if pending_intent and not s.get("blocked") and intent in ("out_of_scope", "navigate_to_poi") and answered_pending:
+            intent, topic = pending_intent, pending_topic
+            # 원래 질문의 검색어는 남아 있지 않으므로 슬롯으로 다시 만든다
+            s_query = "승차권" if topic == "ticket" else s["message"]
+            update = {"poi_query": s_query, "knowledge_query": f"{s_query} 구매 방법"}
+        else:
+            update = {}
+        if intent == "ticket_purchase_and_navigation":
+            topic = "ticket"
+        needs = REQUIRED_SLOTS.get(topic, ()) if intent in ("ask_procedure", "ticket_purchase_and_navigation") else ()
+        missing = [k for k in needs if not slots.get(k)]
+        return {"intent": intent, "topic": topic, "slots": slots, "missing": missing, **update}
 
     def _deny(self, s: State):
         key = "deny" if s.get("blocked") else "scope"
@@ -142,10 +196,32 @@ class Agent:
                                "assistant_message": t("unknown_poi", ctx.language), "next_action": "reply"}}
         return {"result": self._destination(s, found[0], sources=[])}
 
+    def _ask_slot(self, s: State):
+        """빠진 필수 슬롯 하나를 버튼과 함께 묻는다. 버튼은 텍스트로 답이 돌아오도록 poi_id 없이 만든다."""
+        lang, slot = s["ctx"].language, s["missing"][0]
+        return {"result": {"status": "needs_clarification", "intent": s["intent"],
+                           "assistant_message": t(SLOT_QUESTIONS[slot], lang),
+                           "suggested_replies": self._slot_buttons(slot, lang, with_unsure=True),
+                           "next_action": "reply", "slots": self._pending(s)}}
+
+    def _explain_options(self, s: State):
+        """'잘 모르겠어요' → R3 자료로 선택지 차이를 설명하고 다시 묻는다 (자료 없으면 설명 없이 다시 묻기)."""
+        ctx, lang, slot = s["ctx"], s["ctx"].language, s["missing"][0]
+        names = " ".join(label(slot, v, "ko") for v in SLOT_LABELS[slot])
+        hits = [h for h in self.search_knowledge(f"{names} 차이 비교", lang,
+                                                 {"map_id": ctx.map_id, "intent": "compare"}) if h.excerpt.strip()][:4]
+        if hits:
+            msg = f"{self._compose_text(f'{names} 차이', hits, lang)} {t('pick_train_type', lang)}"
+        else:
+            msg = t("no_compare", lang)
+        return {"result": {"status": "needs_clarification", "intent": s["intent"], "assistant_message": msg[:800],
+                           "suggested_replies": self._slot_buttons(slot, lang, with_unsure=False),
+                           "sources": self._sources(hits), "next_action": "reply", "slots": self._pending(s)}}
+
     def _retrieve(self, s: State):
         ctx = s["ctx"]
-        hits = self.search_knowledge(s["knowledge_query"], ctx.language,
-                                     {"map_id": ctx.map_id, "intent": s["intent"]})
+        hits = self.search_knowledge(self._with_slots(s["knowledge_query"], s), ctx.language,
+                                     {"map_id": ctx.map_id, "intent": s["intent"], "slots": s.get("slots", {})})
         return {"hits": [h for h in hits if h.excerpt.strip()][:4]}
 
     def _compose(self, s: State):
@@ -156,17 +232,7 @@ class Agent:
                                                         "assistant_message": t("no_evidence", lang),
                                                         "next_action": "none"}}
             return {"answer_text": None}  # 티켓+길 안내: 목적지 찾기는 계속
-        try:
-            text = self.llm.compose(s["message"], hits, lang)
-            cited = {int(n) for n in re.findall(r"\[(\d+)\]", text)}
-            if not cited or not cited <= set(range(1, len(hits) + 1)):
-                raise LLMError(f"인용 번호 위반: {cited}")
-        except LLMUnavailable:
-            raise
-        except LLMError as exc:  # 문장 생성 실패 → 자료 제목만 보여 주는 안전한 폴백
-            log.warning("compose_fallback %s", exc)
-            text = t("sources_only", lang)
-        text = text[:600]
+        text = self._compose_text(s["message"], hits, lang)[:600]
         if s["intent"] == "ask_procedure":
             return {"answer_text": text, "result": {"status": "answered", "intent": s["intent"],
                                                     "assistant_message": text, "sources": self._sources(hits),
@@ -175,9 +241,13 @@ class Agent:
 
     def _find_poi(self, s: State):
         ctx, lang = s["ctx"], s["ctx"].language
-        pois = [p for p in self.search_pois(ctx.map_id, s["poi_query"], {"verified": True}) if p.verified]
+        if s.get("missing"):  # 되묻기 상한 초과 → 해당 종류의 장소를 목록으로 보여 줌
+            pois = self.search_pois(ctx.map_id, "", {"category": "ticket_office", "verified": True})
+        else:
+            pois = self.search_pois(ctx.map_id, self._with_slots(s["poi_query"], s), {"verified": True})
+        pois = [p for p in pois if p.verified]
         sources = self._sources(s.get("hits") or [])
-        if len(pois) == 1:
+        if len(pois) == 1 and not s.get("missing"):
             return {"result": self._destination(s, pois[0], sources)}
         if not pois:
             if s.get("answer_text"):  # 장소는 못 찾았지만 이용 방법 답은 있음
@@ -185,9 +255,8 @@ class Agent:
                                    "sources": sources, "next_action": "none"}}
             return {"result": {"status": "needs_clarification", "intent": s["intent"],
                                "assistant_message": t("ask_where", lang), "next_action": "reply"}}
-        # 후보 여러 개 → 추가 질문. 상한을 넘으면 목록 직접 선택으로 유도
-        asked = sum(1 for m in ctx.recent_messages if m.role == "assistant" and m.status == "needs_clarification")
-        key = "choose_list" if asked >= MAX_CLARIFY else "choose"
+        # 후보 여러 개 → 장소 되묻기. 상한을 넘으면 목록 직접 선택으로 유도
+        key = "choose_list" if self._asked(ctx) >= MAX_CLARIFY or s.get("missing") else "choose"
         replies = [{"label": poi_name(p, lang)[:40], "selected_poi_id": p.poi_id} for p in pois[:MAX_SUGGEST]]
         replies.append({"label": t("dont_know", lang), "selected_poi_id": None})
         msg = t(key, lang) if not s.get("answer_text") else f"{s['answer_text']} {t(key, lang)}"
@@ -195,14 +264,17 @@ class Agent:
                            "suggested_replies": replies, "next_action": "reply"}}
 
     # ── 분기 ─────────────────────────────────────────────────────────
-    @staticmethod
-    def _after_understand(s: State) -> str:
+    def _after_slots(self, s: State) -> str:
         if s.get("blocked") or s["intent"] == "out_of_scope":
             return "deny"
         if s["intent"] == "report_lost":
             return "lost"
         if s.get("selected_poi_id"):
             return "verify_selected"
+        if s.get("missing"):
+            if self._asked(s["ctx"]) >= MAX_CLARIFY:
+                return "find_poi"  # 계속 못 고르면 목록에서 직접 고르게
+            return "explain_options" if s.get("unsure") else "ask_slot"
         if s["intent"] == "navigate_to_poi":
             return "find_poi"
         return "retrieve"  # ask_procedure · ticket_purchase_and_navigation
@@ -212,6 +284,46 @@ class Agent:
         return END if s.get("result") else "find_poi"
 
     # ── 도우미 ───────────────────────────────────────────────────────
+    @staticmethod
+    def _asked(ctx: SessionContext) -> int:
+        return sum(1 for m in ctx.recent_messages if m.role == "assistant" and m.status == "needs_clarification")
+
+    @staticmethod
+    def _pending(s: State) -> dict:
+        return {**s.get("slots", {}), "pending_intent": s["intent"], "pending_topic": s.get("topic") or ""}
+
+    @staticmethod
+    def _slot_buttons(slot: str, lang: str, with_unsure: bool) -> list[dict]:
+        buttons = [{"label": label(slot, v, lang), "selected_poi_id": None} for v in SLOT_LABELS[slot]]
+        if with_unsure:
+            buttons.append({"label": t("dont_know", lang), "selected_poi_id": None})
+        return buttons
+
+    @staticmethod
+    def _with_slots(query: str | None, s: State) -> str:
+        """검색어에 채운 슬롯 이름을 붙인다. 예: '승차권' + express → '승차권 직통열차'."""
+        q = query or s["message"]
+        for slot, value in (s.get("slots") or {}).items():
+            if slot in SLOT_LABELS and value in SLOT_LABELS[slot]:
+                name = label(slot, value, "ko")
+                if name not in q:
+                    q = f"{name} {q}"
+        return q
+
+    def _compose_text(self, question: str, hits: list[KnowledgeHit], lang: str) -> str:
+        """자료 근거 답변. 인용 번호가 없거나 범위 밖이면 자료 제목만 안내하는 폴백."""
+        try:
+            text = self.llm.compose(question, hits, lang)
+            cited = {int(n) for n in re.findall(r"\[(\d+)\]", text)}
+            if not cited or not cited <= set(range(1, len(hits) + 1)):
+                raise LLMError(f"인용 번호 위반: {cited}")
+            return text
+        except LLMUnavailable:
+            raise
+        except LLMError as exc:
+            log.warning("compose_fallback %s", exc)
+            return t("sources_only", lang)
+
     @staticmethod
     def _sources(hits: list[KnowledgeHit]) -> list[dict]:
         return [Source(document_id=h.document_id, title=h.title, source_url=h.source_url,
