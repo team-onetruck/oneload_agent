@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
-from .contracts import POI, KnowledgeHit
+from .contracts import POI, Departure, KnowledgeHit
 
 MOCK_DIR = Path(__file__).resolve().parent.parent / "mocks"
 
@@ -32,6 +33,10 @@ class PoiSearch(Protocol):  # R2 Agent -> R4 Places (명세 10장)
 
 class MapStore(Protocol):  # R2 Visual Localization -> R4 공간 데이터 (8.3 graph 형식)
     def get_graph(self, map_id: str, map_version: str) -> dict: ...
+
+
+class DepartureSearch(Protocol):  # [제안] R2 Agent -> R4 시각표 도구 (R3 공식 시각표 데이터)
+    def __call__(self, origin: str, destination: str, now: datetime, limit: int) -> list[Departure]: ...
 
 
 def _load(name: str) -> dict:
@@ -83,6 +88,36 @@ class MockPoiSearch:
             if not q or any(_norm(n) and (_norm(n) in q or q in _norm(n)) for n in names):
                 out.append(p)
         return out
+
+
+class MockDepartures:
+    """첫차 · 막차 · 배차 간격으로 출발 시각을 만들어 내는 가짜 시각표 도구 (mocks/timetable.json, 가상 값)."""
+
+    def __init__(self, path: str = "timetable.json"):
+        self._tt = _load(path)
+
+    def __call__(self, origin: str, destination: str, now: datetime, limit: int = 3) -> list[Departure]:
+        if origin != self._tt["origin"]:
+            return []
+        out: list[Departure] = []
+        for svc in self._tt["services"]:
+            minutes = svc["duration_min"].get(destination)
+            if minutes is None:
+                continue
+            day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            h, m = map(int, svc["first"].split(":"))
+            lh, lm = map(int, svc["last"].split(":"))
+            t, last = day + timedelta(hours=h, minutes=m), day + timedelta(hours=lh, minutes=lm)
+            count = 0
+            while t <= last and count < limit:
+                if t >= now:
+                    out.append(Departure(train_type=svc["train_type"], departs_at=t,
+                                         arrives_at=t + timedelta(minutes=minutes), origin=origin,
+                                         destination=destination, source_title=self._tt["source_title"],
+                                         source_url=self._tt.get("source_url"), verified_at=self._tt.get("verified_at")))
+                    count += 1
+                t += timedelta(minutes=svc["every_min"])
+        return sorted(out, key=lambda d: d.departs_at)
 
 
 class MockMapStore:

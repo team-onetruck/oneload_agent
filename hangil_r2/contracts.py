@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -57,6 +58,25 @@ class POI(_Strict):
     nearest_node_id: str
     aliases: list[str] = Field(default_factory=list)
     verified: bool
+
+
+class Departure(_Strict):
+    """[제안] get_departures 결과 한 줄 (시각표 기준, 남은 좌석은 다루지 않음 — D-21)."""
+
+    train_type: Literal["express", "general"]
+    departs_at: datetime  # 출발역 출발 시각 (KST, tz 포함)
+    arrives_at: datetime  # 도착역 도착 예정 시각
+    origin: str
+    destination: str  # 예: "인천공항1터미널"
+    source_title: str  # 시각표 출처 이름 (화면 출처 표시용)
+    source_url: str | None = None
+    verified_at: str | None = None
+
+    @model_validator(mode="after")
+    def _order(self) -> "Departure":
+        if self.arrives_at <= self.departs_at:
+            raise ValueError("도착 시각이 출발 시각보다 빠름")
+        return self
 
 
 # ── 출력: Agent → Backend ──────────────────────────────────────────────

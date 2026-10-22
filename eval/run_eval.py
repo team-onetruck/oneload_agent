@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from hangil_r2 import Agent, FakeLLM, LocalizationContext, OpenAILLM, SessionContext, VisualLocalizer  # noqa: E402
-from hangil_r2.tools import MockKnowledgeSearch, MockMapStore, MockPoiSearch  # noqa: E402
+from hangil_r2.tools import MockDepartures, MockKnowledgeSearch, MockMapStore, MockPoiSearch  # noqa: E402
 
 MAP_ID, MAP_VERSION = "demo-station", "2026-10-22.1"
 
@@ -41,7 +41,7 @@ def save(mode: str, rows: list[dict]) -> Path:
 
 
 def run_agent(llm_name: str) -> None:
-    agent = Agent(make_llm(llm_name), MockKnowledgeSearch(), MockPoiSearch())
+    agent = Agent(make_llm(llm_name), MockKnowledgeSearch(), MockPoiSearch(), get_departures=MockDepartures())
     rows = []
     with open(ROOT / "eval" / "agent_cases.csv", encoding="utf-8") as f:
         for case in csv.DictReader(f):

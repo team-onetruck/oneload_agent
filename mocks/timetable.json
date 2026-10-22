@@ -1,0 +1,13 @@
+{
+  "_note": "흐름 시험용 가상 시각표. 첫차 · 막차 · 배차 간격 · 소요 시간 모두 가상 값이며 실제 공항철도 시각표가 아님. 실제 값은 R3(공식 시각표) · R4(API) 로 교체.",
+  "source_title": "공항철도 시각표 (가상 예시)",
+  "source_url": "https://example.invalid/timetable",
+  "verified_at": "2026-10-22",
+  "origin": "서울역",
+  "services": [
+    {"train_type": "express", "first": "05:20", "last": "22:40", "every_min": 30,
+     "duration_min": {"인천공항1터미널": 43, "인천공항2터미널": 51}},
+    {"train_type": "general", "first": "05:25", "last": "23:45", "every_min": 10,
+     "duration_min": {"인천공항1터미널": 59, "인천공항2터미널": 66}}
+  ]
+}

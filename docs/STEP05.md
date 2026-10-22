@@ -25,6 +25,7 @@ flowchart LR
   PR --> VL
   AG -- "search_knowledge" --> RAG["R3 RAG<br/>이용 방법 · 출처"]
   AG -- "search_pois (verified)" --> PL["R4 Places"]
+  AG -. "get_departures [제안]" .-> TT["R4 시각표 도구<br/>R3 공식 시각표"]
   VL -- "get_graph(map_version)" --> MAP[("R4 공간 데이터<br/>노드 · sign · feature")]
   AG --> LLM["LLM API"]
   VL --> LLM
@@ -53,8 +54,10 @@ flowchart LR
 | 턴 | 사용자 | 노드 | 응답 |
 |---|---|---|---|
 | 1 | 공항 가는 티켓 어디서 사? | understand → fill_slots → ask_slot | needs_clarification · [직통열차] [일반열차] [잘 모르겠어요] · slots: pending |
-| 2 | 잘 모르겠어요 | → explain_options | needs_clarification · 비교 자료 요약 [1] · [직통열차] [일반열차] |
-| 3 | 직통열차 | → retrieve → compose → find_poi | destination_set · 구매 방법 [1] + "직통열차 승차권 판매처로 안내할게요" · slots: {train_type: express} |
+| 2 | 잘 모르겠어요 | → explain_options | needs_clarification · 비교 자료 요약 [1] + "인천공항1터미널 기준 가장 빨리 도착하는 열차: 14:20 출발 직통열차 (15:03 도착 예정). 다음 일반열차: 14:05 출발, 15:04 도착 예정." · [직통열차] [일반열차] |
+| 3 | 직통열차 | → retrieve → compose → find_poi | destination_set · 구매 방법 [1] + "다음 직통열차: 14:20 출발, 15:03 도착 예정" + "직통열차 승차권 판매처로 안내할게요" · slots: {train_type: express} |
+
+시각은 위 예시처럼 가상 시각표 기준이다. **가장 빠른 열차 = 출발이 아니라 도착 시각이 가장 이른 열차**이며, 시각 계산 · 문장은 코드(`_arrival_text`)가 만든다 (LLM 이 시각을 쓰지 않음). 남은 좌석은 안내하지 않는다 (D-21).
 
 **B. 사진 → 위치 후보 (`estimate_location`)**: [docs/localization.md](localization.md)
 

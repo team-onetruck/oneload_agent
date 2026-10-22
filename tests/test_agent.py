@@ -158,3 +158,60 @@ def test_external_failures_propagate():
 def test_english_session():
     r = agent().handle_message(ctx(language="en"), "where is exit 1?", None)
     assert r.status == "destination_set" and r.assistant_message.startswith("I'll guide you")
+
+
+# ── 도착 시각 안내 (시각표 기준, 남은 좌석 제외 — D-21) ─────────────────────
+from datetime import datetime  # noqa: E402
+
+from hangil_r2.agent import KST  # noqa: E402
+from hangil_r2.tools import MockDepartures  # noqa: E402
+
+
+def timed_agent(hh, mm, departures=None):
+    return Agent(FakeLLM(), MockKnowledgeSearch(), MockPoiSearch(), get_departures=departures or MockDepartures(),
+                 clock=lambda: datetime(2026, 10, 22, hh, mm, tzinfo=KST))
+
+
+# A-20 '잘 모르겠어요' → 차이 설명 + 가장 빨리 '도착'하는 열차 + 다른 종류 다음 열차 + 시각표 출처
+def test_unsure_shows_fastest_arrival():
+    r = timed_agent(14, 0).handle_message(ctx(slots=PENDING), "잘 모르겠어요", None)
+    msg = r.assistant_message
+    assert "14:20 출발 직통열차" in msg and "15:03 도착" in msg  # 가상 시각표: 직통 14:20 → 15:03
+    assert "다음 일반열차: 14:05 출발, 15:04 도착" in msg
+    assert "인천공항1터미널 기준" in msg and any(s.document_id == "timetable" for s in r.sources)
+    assert "좌석" not in msg
+
+
+# A-21 출발이 늦어도 먼저 도착하는 열차를 고른다 / 직통이 막 떠나면 일반열차가 더 빠름
+def test_fastest_by_arrival_not_departure():
+    r = timed_agent(14, 21).handle_message(ctx(slots=PENDING), "잘 모르겠어요", None)
+    assert "14:25 출발 일반열차" in r.assistant_message  # 일반 15:24 도착 < 직통 14:50 → 15:33
+
+
+# A-22 열차를 고르면 그 종류의 다음 열차만 안내 + 매표소 목적지
+def test_chosen_train_next_departure():
+    r = timed_agent(14, 0).handle_message(ctx(slots=PENDING), "직통열차", None)
+    assert r.status == "destination_set" and "다음 직통열차: 14:20 출발, 15:03 도착" in r.assistant_message
+    assert r.sources[-1].document_id == "timetable" and len(r.sources) <= 4
+
+
+# A-23 2터미널을 말하면 2터미널 기준
+def test_terminal_slot():
+    r = timed_agent(14, 0).handle_message(ctx(), "2터미널 가는 직통열차 표 어디서 사?", None)
+    assert "인천공항2터미널 기준" in r.assistant_message and "15:11 도착" in r.assistant_message
+
+
+# A-24 시각표 도구 장애 · 막차 이후 → 시각 문장 없이 본 답변은 그대로
+@pytest.mark.parametrize("hh,mm,tool", [(14, 0, "down"), (23, 59, None)])
+def test_departures_missing_degrades(hh, mm, tool):
+    def down(*a):
+        raise ToolUnavailable("timetable down")
+    r = timed_agent(hh, mm, down if tool else None).handle_message(ctx(slots=PENDING), "잘 모르겠어요", None)
+    assert r.status == "needs_clarification" and "출발" not in r.assistant_message
+    assert all(s.document_id != "timetable" for s in r.sources)
+
+
+# A-25 영어 세션
+def test_arrival_english():
+    r = timed_agent(14, 0).handle_message(ctx(language="en", slots=PENDING), "not sure", None)
+    assert "earliest arrival is the 14:20 Express train" in r.assistant_message

@@ -25,14 +25,18 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import TypedDict
+from datetime import datetime, timedelta, timezone
+from typing import Callable, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
-from .contracts import AgentResponse, KnowledgeHit, POI, SessionContext, Source
+from .contracts import AgentResponse, Departure, KnowledgeHit, POI, SessionContext, Source
 from .llm import LLM, LLMError, LLMUnavailable
-from .tools import KnowledgeSearch, PoiSearch, ToolUnavailable
+from .tools import DepartureSearch, KnowledgeSearch, PoiSearch, ToolUnavailable
+
+KST = timezone(timedelta(hours=9))
+DEFAULT_TERMINAL = "인천공항1터미널"  # 행선지를 말하지 않았을 때 기준 (D-23, 문장에 기준 터미널을 항상 표시)
 
 log = logging.getLogger("hangil_r2.agent")
 
@@ -70,7 +74,16 @@ MSG = {
                    "en": "We have no verified comparison. Please choose a ticket type."},
     "fallback": {"ko": "답변을 만들지 못했어요. 잠시 후 다시 시도해 주세요.",
                  "en": "We couldn't create an answer. Please try again shortly."},
+    # 도착 시각 안내 (시각은 코드가 계산해서 넣는다. LLM 이 시각을 쓰지 않음)
+    "fastest": {"ko": "{dest} 기준 가장 빨리 도착하는 열차: {dep} 출발 {train} ({arr} 도착 예정).",
+                "en": "To {dest}, the earliest arrival is the {dep} {train} (arrives {arr})."},
+    "other_next": {"ko": "다음 {train}: {dep} 출발, {arr} 도착 예정.",
+                   "en": "The next {train} leaves at {dep} and arrives at {arr}."},
+    "chosen_next": {"ko": "다음 {train}: {dep} 출발, {arr} 도착 예정 ({dest} 기준).",
+                    "en": "The next {train} leaves at {dep}, arriving at {arr} ({dest})."},
 }
+
+DEST_EN = {"인천공항1터미널": "Incheon Airport T1", "인천공항2터미널": "Incheon Airport T2"}
 
 # 슬롯 값 → 버튼 · 검색어에 쓰는 이름
 SLOT_LABELS = {"train_type": {"express": {"ko": "직통열차", "en": "Express train"},
@@ -111,8 +124,13 @@ class State(TypedDict, total=False):
 
 
 class Agent:
-    def __init__(self, llm: LLM, search_knowledge: KnowledgeSearch, search_pois: PoiSearch):
+    def __init__(self, llm: LLM, search_knowledge: KnowledgeSearch, search_pois: PoiSearch,
+                 get_departures: DepartureSearch | None = None, origin_station: str = "서울역",
+                 clock: Callable[[], datetime] | None = None):
+        """get_departures 가 없으면 도착 시각 안내 없이 동작한다. clock 은 테스트에서 시각 고정용."""
         self.llm, self.search_knowledge, self.search_pois = llm, search_knowledge, search_pois
+        self.get_departures, self.origin_station = get_departures, origin_station
+        self.clock = clock or (lambda: datetime.now(KST))
         self.graph = self._build()
 
     # ── 진입점 (Backend 가 호출) ────────────────────────────────────────
@@ -209,14 +227,18 @@ class Agent:
         ctx, lang, slot = s["ctx"], s["ctx"].language, s["missing"][0]
         names = " ".join(label(slot, v, "ko") for v in SLOT_LABELS[slot])
         hits = [h for h in self.search_knowledge(f"{names} 차이 비교", lang,
-                                                 {"map_id": ctx.map_id, "intent": "compare"}) if h.excerpt.strip()][:4]
+                                                 {"map_id": ctx.map_id, "intent": "compare"}) if h.excerpt.strip()][:3]
+        arrival, tt_source = self._arrival_text(s, chosen=None)  # 두 열차 중 가장 빨리 도착하는 열차
+        parts = [self._compose_text(f"{names} 차이", hits, lang)] if hits else [t("no_compare", lang)]
+        if arrival:
+            parts.append(arrival)
         if hits:
-            msg = f"{self._compose_text(f'{names} 차이', hits, lang)} {t('pick_train_type', lang)}"
-        else:
-            msg = t("no_compare", lang)
-        return {"result": {"status": "needs_clarification", "intent": s["intent"], "assistant_message": msg[:800],
+            parts.append(t("pick_train_type", lang))
+        sources = self._sources(hits) + ([tt_source] if tt_source else [])
+        return {"result": {"status": "needs_clarification", "intent": s["intent"],
+                           "assistant_message": " ".join(parts)[:800],
                            "suggested_replies": self._slot_buttons(slot, lang, with_unsure=False),
-                           "sources": self._sources(hits), "next_action": "reply", "slots": self._pending(s)}}
+                           "sources": sources, "next_action": "reply", "slots": self._pending(s)}}
 
     def _retrieve(self, s: State):
         ctx = s["ctx"]
@@ -329,11 +351,63 @@ class Agent:
         return [Source(document_id=h.document_id, title=h.title, source_url=h.source_url,
                        verified_at=h.verified_at).model_dump() for h in hits[:4]]
 
+    def _terminal(self, s: State) -> str:
+        """행선지 슬롯 → 시각표의 도착역 이름. 2터미널을 말했을 때만 2터미널, 그 외는 기본값."""
+        raw = (s.get("slots") or {}).get("terminal") or ""
+        if re.search(r"(2|제2|두\s*번째)\s*(터미널|여객)|t2|terminal\s*2", raw.lower()):
+            return "인천공항2터미널"
+        return DEFAULT_TERMINAL
+
+    def _arrival_text(self, s: State, chosen: str | None) -> tuple[str | None, dict | None]:
+        """시각표로 도착 시각 안내 문장을 만든다 (남은 좌석은 다루지 않음 — D-21).
+
+        chosen=None : 두 열차 중 가장 빨리 '도착'하는 열차 + 다른 종류의 다음 열차
+        chosen=값   : 고른 열차 종류의 다음 열차
+        보조 정보라서 도구 장애 · 데이터 없음이면 문장 없이 넘어간다 (본 답변은 그대로).
+        """
+        if self.get_departures is None:
+            return None, None
+        lang, dest = s["ctx"].language, self._terminal(s)
+        try:
+            deps: list[Departure] = self.get_departures(self.origin_station, dest, self.clock(), 3)
+        except (ToolUnavailable, ValidationError) as exc:
+            log.warning("departures_unavailable %s", exc)
+            return None, None
+        now = self.clock()
+        deps = [d for d in deps if d.departs_at >= now]
+        if chosen:
+            deps = [d for d in deps if d.train_type == chosen]
+        if not deps:
+            return None, None
+        hm = lambda d: d.astimezone(KST).strftime("%H:%M")  # noqa: E731
+        dest_name = dest if lang == "ko" else DEST_EN.get(dest, dest)
+        first = min(deps, key=lambda d: d.arrives_at)  # 출발이 아니라 도착 시각으로 비교
+        if chosen:
+            text = t("chosen_next", lang, train=label("train_type", chosen, lang), dep=hm(first.departs_at),
+                     arr=hm(first.arrives_at), dest=dest_name)
+        else:
+            text = t("fastest", lang, dest=dest_name, train=label("train_type", first.train_type, lang),
+                     dep=hm(first.departs_at), arr=hm(first.arrives_at))
+            others = [d for d in deps if d.train_type != first.train_type]
+            if others:
+                o = min(others, key=lambda d: d.arrives_at)
+                text += " " + t("other_next", lang, train=label("train_type", o.train_type, lang),
+                                dep=hm(o.departs_at), arr=hm(o.arrives_at))
+        src = Source(document_id="timetable", title=first.source_title, source_url=first.source_url,
+                     verified_at=first.verified_at).model_dump()
+        return text, src
+
     def _destination(self, s: State, poi: POI, sources: list[dict]) -> dict:
         ctx, lang = s["ctx"], s["ctx"].language
         name = poi_name(poi, lang)
         has_loc = ctx.confirmed_location is not None
         msg = t("dest_route" if has_loc else "dest_locate", lang, name=name)
+        train = (s.get("slots") or {}).get("train_type")
+        if s.get("topic") == "ticket" and train:  # 고른 열차의 다음 출발 · 도착 시각
+            arrival, tt_source = self._arrival_text(s, chosen=train)
+            if arrival:
+                msg = f"{arrival} {msg}"
+                sources = sources[:3] + [tt_source]
         if s.get("answer_text"):
             msg = f"{s['answer_text']} {msg}"
         return {"status": "destination_set", "intent": s["intent"], "assistant_message": msg[:800],

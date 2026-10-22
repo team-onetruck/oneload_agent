@@ -110,7 +110,8 @@ class FakeLLM:
         base = {"blocked": False, "topic": None, "unsure": any(w in m for w in self.UNSURE),
                 "slots": {"train_type": "express" if ("직통" in m or "express" in m)
                           else "general" if ("일반" in m or "regular" in m) else None,
-                          "terminal": None, "payment": None},
+                          "terminal": (re.search(r"[12]\s*터미널|t[12]|terminal\s*[12]", m) or [None])[0],
+                          "payment": None},
                 "poi_query": None, "knowledge_query": None}
         if any(w in m for w in self.UNSAFE):
             return {**base, "intent": "out_of_scope", "blocked": True}
