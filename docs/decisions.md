@@ -40,3 +40,16 @@
 기한     : 어느 CP 까지
 다시 볼 조건 : 예) 평가셋 오분류 3건 이상
 ```
+
+## 2026-10-22 오후 · 백엔드(oneload-backend) 규격 채택
+
+| No | 질문 | 결정 | 상태 | 결정자 | 영향 |
+|---|---|---|---|---|---|
+| D-24 | R2 규격 기준 | **oneload-backend `app/ai/contracts.py` 를 그대로 따른다.** 사본을 `hangil_r2/backend/` 에 두고 `scripts/check_backend_compat.py` 로 일치 확인. 백엔드 저장소에는 올리지 않음 | 확정 (사용자) | 사용자 | D-03 · D-04 · D-05 · D-16 · D-17 은 백엔드 값으로 대체 |
+| D-25 | 도착 시각 비교 (D-21 · D-22) | 기본 **꺼짐**. 백엔드 RuleAgent 의 "확인된 요금 · 소요시간 없으면 비교 안 함" 과 맞춤. 공식 시각표 도구가 생기면 `get_departures` 를 넘겨 켬 | 확정 | R2 | — |
+| D-26 | 위치 순위 방식 | 백엔드 `match_location` 유지. R2 `rank_location` 은 같은 입출력의 **개선 제안** (드문 문구 가중 · 오타 허용 · 동점 안내) | 제안 | R4 | 바꾸면 R6 사진 평가로 비교 |
+| D-27 | 대화 상태 | Agent 는 상태 없음. 되묻기 맥락은 백엔드가 저장하는 `slots` + `recent_messages`(10개)로 이어 감. 내 이전 `pending_intent` 방식은 폐기 | 확정 | R2 | — |
+| D-28 | LLM 장애 | `fallback=RuleAgent()` 로 백엔드 규칙 응답. fallback 없으면 `cannot_answer` | 제안 | R2 + R4 | — |
+| D-29 | R3 검색 필터 | `context["slots"]["train_type"]` 로 다른 열차 전용 문서 제외, 요금 문서는 `scope="fare"` | 합의 필요 | R3 | — |
+
+**대체된 항목**: D-02(표지판 형식 → 백엔드 `landmarks.sign_texts`), D-03 · D-04 · D-05(status · intent · next_action → 백엔드 값), D-07 · D-08 · D-10(위치 후보 · hint → 백엔드 `match_location` · `retake_hint`), D-16 · D-17(slots 저장 · 버튼 → 백엔드 `Slots`), D-18 · D-23(행선지 · 결제 슬롯 → 백엔드 Slots 에 없음, 사용 안 함).

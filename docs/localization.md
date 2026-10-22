@@ -1,7 +1,14 @@
 # 사진 기반 위치 확인 방법 (R2 · Visual Localization)
 
+> **2026-10-22 오후 갱신 · 백엔드 규격 채택 (D-24 · D-26)**
+> oneload-backend 는 일을 이렇게 나눈다: **R2 = 사진에서 보이는 글자 · 시설 읽기 (`LLMVision.extract` → `VisionFeatures`)**,
+> **백엔드 = 그 글자를 지도 `landmarks.sign_texts` 와 대조 (`match_location`) · 재촬영 안내 (`retake_hint`)**.
+> 아래 방법 중 ②~⑤ 단계(대조 · 보조 단서 · 후보 · hint)는 이제 백엔드 몫이고, R2 의 같은 아이디어는
+> `hangil_r2/ranker.py rank_location` (match_location 과 같은 입출력)으로 **개선 제안**만 한다.
+> 아래 본문의 `sign`(text · facing_deg) · `feature` 형식 제안은 백엔드의 `sign_texts` 형식으로 대체되었다.
+
 > 결정 (2026-10-22, 팀): **사진 인식을 위치 확인의 주 수단으로 사용**한다. 마커는 보조(정합용) 또는 미사용.
-> 코드: `hangil_r2/localization.py` · 테스트: `tests/test_localization.py`
+> (이전 코드 `hangil_r2/localization.py` 는 백엔드 규격 채택으로 `hangil_r2/ranker.py` 로 대체)
 
 ## 1. 결론
 

@@ -6,3 +6,4 @@
 |---|---|---|---|---|---|---|
 | v1 | 2026-10-22 | understand · compose · scene | 첫 버전. 의도 5종 · 근거 인용 답변 · 보이는 글자만 읽기, 지시문 무시 규칙 포함 | CP② LLM 호출 확인용 | 측정 전 (FakeLLM 흐름 12/12) | (첫 커밋) |
 | v2 | 2026-10-22 | understand | topic · slots(train_type · terminal · payment) · unsure 추가, "말한 것만 슬롯에" 규칙. compose · scene 은 v1 과 동일 | 공항철도 승차권 질문은 열차 종류에 따라 답이 달라 되묻기 필요 | FakeLLM 흐름 14/14 (실제 LLM 측정 전) | (이번 커밋) |
+| v3 | 2026-10-22 | understand · scene (compose 는 v2 와 동일) | 백엔드 규격 채택: 의도 6종 · topic · slots(train_type express/allstop, has_transit_card) · 사진 요약 입력. scene 은 백엔드 VisionFeatures 모양(image_quality · texts[kind] · facilities · person_visible). v1 · v2 파일은 이전 계약용이라 삭제 (커밋 이력에 보존) | 백엔드 AgentResponse · VisionFeatures 와 값이 달라 연결 불가 | FakeLLM 평가 17/17 · 백엔드 로컬 실행으로 4턴 대화 · 사진 위치 확인 (실제 LLM 측정 전) | (이번 커밋) |

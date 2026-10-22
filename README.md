@@ -1,19 +1,27 @@
-# oneload_agent — 한길 R2 (AI Agent · Visual Localization)
+# oneload_agent — 한길 R2 (AI Agent · Vision)
 
-한길(Hangil) 문제 해결형 AR 내비게이션의 **R2 파트** — AI Agent 와 사진 기반 위치 확인(Visual Localization).
-SKALA AI 서비스 개발 Mini-project · 담당 R2 AI Engineer (흐름) 정유은 · 기준 명세: 팀 API 명세 v0.3 (2026-10-22)
+한길(Hangil) 서울역 · 공항철도 안내 서비스의 **R2 파트**. 백엔드 [oneload-backend](https://github.com/team-onetruck/oneload-backend)의
+AI 규격(`app/ai/contracts.py`)에 맞춘 구현이며, 백엔드 `create_app()` 에 그대로 꽂힌다.
+SKALA AI 서비스 개발 Mini-project · 담당 R2 AI Engineer (흐름) 정유은
 
-> 사용자가 말한 문제를 **검증된 장소와 근거 자료로만** 목적지 · 답변으로 바꾸고,
-> 표지판 사진으로 **현재 위치 후보를 좁혀 사용자가 고르게** 한다.
+> LLM 은 **말을 이해하고, 자료로 문장을 만들고, 사진에서 보이는 글자를 읽는 것**만 한다.
+> 목적지 · 위치 · 경로는 지도 데이터와 코드가 정한다.
 
-## 제공 함수 (명세 10장 계약)
+## 제공하는 것
 
-| 함수 | 호출자 | 반환 | 핵심 규칙 |
+| 구현 | 백엔드 규격 | 백엔드 자리 (`app/main.py`) | 지금 백엔드 기본값 |
 |---|---|---|---|
-| `Agent.handle_message(session_context, message, selected_poi_id)` | R4 `POST /messages` | `AgentResponse` | 목적지는 verified POI 만, 이용 방법은 출처 있을 때만 |
-| `VisualLocalizer.estimate_location(image_bytes, map_id, map_version, context)` | R4 `POST /localizations` | `LocationEstimate` | 후보 최대 3개 · 자동 확정 안 함 · 단서 없으면 `no_match` |
+| `LLMAgent` | `Agent.handle_message(ctx, message, image, selected_poi_id) -> AgentResult` | `create_app(agent=...)` | `RuleAgent` (키워드 규칙) |
+| `LLMVision` | `VisionExtractor.extract(image) -> VisionFeatures` | `create_app(vision=...)` | `NoVision` (항상 503) |
+| `rank_location` [제안] | `match_location` 과 같은 입력 · 출력 | (R4 판단) | 완전 일치 개수 |
 
-Agent 가 쓰는 Tool 은 `search_knowledge`(R3) · `search_pois`(R4) 와 [제안] `get_departures`(시각표, 선택) 이며, 경로 계산은 하지 않는다 (명세 10장). 남은 좌석은 다루지 않는다 (D-21).
+```python
+# 백엔드 연결 예 — 백엔드 엔드포인트는 바꾸지 않는다
+from hangil_r2 import LLMAgent, LLMVision, OpenAILLM, MockKnowledgeSearch
+llm = OpenAILLM()
+app = create_app(agent=LLMAgent(llm, search_knowledge=MockKnowledgeSearch(), fallback=RuleAgent()),
+                 vision=LLMVision(llm))
+```
 
 ## 실행
 
@@ -21,8 +29,8 @@ Agent 가 쓰는 Tool 은 `search_knowledge`(R3) · `search_pois`(R4) 와 [제�
 git clone https://github.com/team-onetruck/oneload_agent.git && cd oneload_agent
 python3 -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-pytest -q                                              # 46 passed — API 키 없이 (FakeLLM + Mock Tool)
-python eval/run_eval.py agent                          # 질문 평가 14문항 (FakeLLM)
+pytest -q                                              # 33 passed — API 키 없이 (FakeLLM + 백엔드 지도 사본)
+python eval/run_eval.py agent                          # 평가 17문항 (FakeLLM)
 
 # 실제 LLM (키 필요)
 cp .env.example .env                                   # OPENAI_API_KEY 입력
@@ -30,38 +38,43 @@ set -a && source .env && set +a
 python eval/run_eval.py agent --llm openai
 ```
 
+**백엔드와 맞는지 확인** (백엔드 저장소는 읽기만 함)
+
+```bash
+git clone https://github.com/team-onetruck/oneload-backend.git ../oneload-backend
+uv run --project ../oneload-backend --with langgraph==1.2.16 python scripts/check_backend_compat.py ../oneload-backend
+# DB 가 있으면 실제 API 순서로 대화 · 사진 위치까지
+DATABASE_URL=postgresql+psycopg://hangil:hangil@localhost:54329/hangil_test \
+uv run --project ../oneload-backend --with langgraph==1.2.16 python scripts/check_backend_compat.py ../oneload-backend --e2e
+```
+
 ## 구조
 
 ```
 hangil_r2/
-  contracts.py      명세 10장 타입 + 출력 규격 규칙 (Pydantic)
-  agent.py          handle_message — LangGraph 10노드 (슬롯 · 되묻기 포함)
-  localization.py   estimate_location — 장면 읽기 + 표지판 · 시설 대조 점수
+  backend/          백엔드 규격 사본 (contracts · mapdata · guard · localization 타입) — 직접 수정 금지
+  agent.py          LLMAgent — LangGraph 12노드 (이해 → 슬롯 → 되묻기 / 답변 / 목적지)
+  vision.py         LLMVision — 사진 → 보이는 글자 · 시설
   llm.py            LLM 어댑터 (FakeLLM · OpenAILLM), 오류 2종 구분
-  tools.py          Tool · 지도 · 시각표 인터페이스 + Mock
-prompts/            understand · compose · scene (v1 · v2, 기본 v2) + CHANGELOG.md
-mocks/              명세 8.3 · 8.4 · 8.5 예시 기반 가상 데이터
-eval/               agent_cases.csv · run_eval.py
-tests/              agent 25 · localization 11 · contracts 3 (파라미터 포함 46건)
+  knowledge.py      R3 검색 · 시각표 도구 인터페이스 + Mock
+  ranker.py         [제안] match_location 개선안 (드문 문구 가중 · 오타 허용 · 동점 안내)
+prompts/            understand · compose · scene (v3) + CHANGELOG.md
+mocks/              maps/seoul-station.json (백엔드 사본) · knowledge.json (데모 문서) · timetable.json (가상)
+eval/               agent_cases.csv (17문항) · run_eval.py
+scripts/            check_backend_compat.py
+tests/              agent 22 · vision 4 · ranker 7 (파라미터 포함 33건)
 docs/               STEP05.md · localization.md · decisions.md · handoff.md
 ```
 
-## 문서
-- [설계서 STEP 05 (R2 부분)](docs/STEP05.md)
-- [사진 기반 위치 확인 방법](docs/localization.md)
-- [결정 기록 · 미정 항목](docs/decisions.md)
-- [인수인계 (R4 · R3 · R6)](docs/handoff.md)
-
 ## 데이터 · 보안
-- `mocks/` 의 노드 · 좌표 · 장소 이름 · 문구 · URL 은 **모두 가상 예시**이며 서울역 실제 데이터가 아니다.
-- API 키는 `.env` 에만 둔다 (`.gitignore`). 오류 로그에는 예외 종류만 남기고 메시지는 버린다.
-- 사진은 처리에만 쓰고 저장하지 않는다. Vision 프롬프트는 사람 정보를 적지 않고, 사진 속 지시문을 따르지 않는다.
+- `mocks/knowledge.json` 의 문구는 **데모**이며 실제 공항철도 이용 방법 · 요금이 아니다. 요금 문서는 일부러 없다 (요금 질문 → `cannot_answer`).
+- `mocks/maps/seoul-station.json` 은 백엔드 지도 사본. 층(B2 · B3 · B7)만 공식 확인, 나머지는 답사 전 임시값 (백엔드 README).
+- API 키는 `.env` 에만 둔다. 오류 로그에는 예외 종류만 남긴다. 사진은 저장하지 않는다.
 
 ## 알려진 한계 (2026-10-22)
-- 실제 LLM · Vision 호출은 **아직 검증 전** (키 없는 환경에서 작성). 테스트는 FakeLLM 기준
-- 노드 표지판 데이터 형식(D-02)이 R4 와 합의 전 → 현장 답사 데이터로 교체 필요
-- 고정 문구는 ko · en 만, ja · zh 는 en 으로 대체
-- 위치 점수 가중치는 초기값 → 현장 사진 평가 후 조정
+- 실제 LLM · Vision 호출은 **아직 검증 전** (키 없는 환경). 테스트 · 평가는 FakeLLM 기준
+- 백엔드 시연 서버(`/api/v1/docs`)는 이 작업 환경에서 접속되지 않아, 같은 백엔드 코드를 로컬에서 띄워 확인함
+- R3 RAG 가 아직 없어 이용 안내는 데모 문서로만 동작
 
 ## 사용 도구
-Python 3.13 · LangGraph · Pydantic · langchain-openai. AI 코딩 도구를 활용해 초안을 작성했고, 모든 코드는 테스트로 동작을 확인했다.
+Python 3.13 · LangGraph · Pydantic · langchain-openai. AI 코딩 도구를 활용해 작성했고, 모든 코드는 테스트와 백엔드 연결 확인으로 동작을 검증했다.

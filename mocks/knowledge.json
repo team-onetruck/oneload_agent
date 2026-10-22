@@ -1,13 +1,102 @@
 {
-  "_note": "R3 search_knowledge 대역. 문구는 흐름 시험용 가상 예시이며 실제 이용 방법 · 요금이 아님. 실제 내용은 R3 수집 자료로 교체.",
-  "hits": [
-    {"document_id": "doc-12", "title": "직통열차 승차권 구매 안내", "excerpt": "(가상 예시) 직통열차 승차권은 직통열차 승차권 판매처에서 구매한다.",
-     "source_url": "https://example.invalid/guide", "verified_at": "2026-10-15", "scope": "ticket", "keywords": ["직통열차", "공항", "티켓", "승차권", "airport", "ticket"]},
-    {"document_id": "doc-13", "title": "일반열차 승차권 구매 안내", "excerpt": "(가상 예시) 일반열차는 일반열차 표사는 곳 또는 승차권 발매기에서 승차권을 구매한다.",
-     "source_url": "https://example.invalid/general", "verified_at": "2026-10-15", "scope": "ticket", "keywords": ["일반열차", "regular"]},
-    {"document_id": "doc-14", "title": "직통열차와 일반열차 비교", "excerpt": "(가상 예시) 직통열차와 일반열차는 정차역 · 소요 시간 · 요금이 다르다. 실제 차이는 R3 공식 자료로 교체.",
-     "source_url": "https://example.invalid/compare", "verified_at": "2026-10-15", "scope": "ticket", "keywords": ["차이", "비교", "difference"]},
-    {"document_id": "doc-20", "title": "1회용 교통카드 보증금 환급 안내", "excerpt": "(가상 예시) 1회용 교통카드 보증금은 역 안 보증금 환급기에서 환급받는다.",
-     "source_url": "https://example.invalid/refund", "verified_at": "2026-10-15", "scope": "card", "keywords": ["보증금", "환급", "1회용", "refund", "deposit"]}
+  "_note": "R3 search_knowledge 대역. 문구는 흐름 시험용 데모이며 실제 공항철도 이용 방법 · 요금 · 소요 시간이 아님. 문서 id 는 백엔드 RuleAgent 의 데모 문서 id 와 맞춤. 요금 문서는 일부러 없음 (요금 질문은 cannot_answer 가 정답). train_type 이 붙은 문서는 그 열차 전용 (context.slots.train_type 으로 걸러짐).",
+  "docs": [
+    {
+      "document_id": "doc-arex-train-types",
+      "scope": "ticket",
+      "verified_at": "2026-10-15",
+      "source_url": null,
+      "title": {
+        "ko": "공항철도 열차 종류 (데모 문서)",
+        "en": "AREX train types (demo doc)"
+      },
+      "excerpt": {
+        "ko": "(데모) 공항철도에는 직통열차와 일반열차가 있고, 타는 방법과 내는 방법이 다르다.",
+        "en": "(demo) AREX runs Express and All-stop trains; boarding and payment differ."
+      },
+      "keywords": [
+        "직통",
+        "일반",
+        "차이",
+        "비교",
+        "종류",
+        "difference",
+        "express",
+        "all-stop",
+        "allstop",
+        "which"
+      ]
+    },
+    {
+      "document_id": "doc-express-ticket",
+      "scope": "ticket",
+      "verified_at": "2026-10-15",
+      "source_url": null,
+      "title": {
+        "ko": "직통열차 승차권 구매 (데모 문서)",
+        "en": "Buying an express ticket (demo doc)"
+      },
+      "excerpt": {
+        "ko": "(데모) 직통열차는 직통열차 표 사는 곳에서 승차권을 산다.",
+        "en": "(demo) Express tickets are sold at the Express ticket counter."
+      },
+      "keywords": [
+        "직통",
+        "express",
+        "승차권",
+        "ticket",
+        "구매",
+        "buy"
+      ],
+      "train_type": "express"
+    },
+    {
+      "document_id": "doc-allstop-ticket",
+      "scope": "ticket",
+      "verified_at": "2026-10-15",
+      "source_url": null,
+      "title": {
+        "ko": "일반열차 이용 (데모 문서)",
+        "en": "Riding the all-stop train (demo doc)"
+      },
+      "excerpt": {
+        "ko": "(데모) 일반열차는 교통카드를 찍고 타며, 카드가 없으면 1회용 교통카드를 산다.",
+        "en": "(demo) All-stop trains take a transit card; without one, buy a single-journey card."
+      },
+      "keywords": [
+        "일반",
+        "all-stop",
+        "allstop",
+        "교통카드",
+        "transit card",
+        "1회용",
+        "single journey",
+        "결제",
+        "pay",
+        "현금",
+        "cash"
+      ],
+      "train_type": "allstop"
+    },
+    {
+      "document_id": "doc-deposit-refund",
+      "scope": "card",
+      "verified_at": "2026-10-12",
+      "source_url": null,
+      "title": {
+        "ko": "1회용 교통카드 보증금 환급 (데모 문서)",
+        "en": "Single-journey card refund (demo doc)"
+      },
+      "excerpt": {
+        "ko": "(데모) 1회용 교통카드 보증금은 보증금 환급기에서 돌려받는다.",
+        "en": "(demo) The single-journey card deposit is returned at a deposit refund machine."
+      },
+      "keywords": [
+        "보증금",
+        "환급",
+        "deposit",
+        "refund"
+      ]
+    }
   ]
 }

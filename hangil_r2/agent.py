@@ -1,415 +1,558 @@
-"""AI Agent — handle_message (명세 v0.3 10장 · 8.5).
+"""LLM 기반 대화 Agent — 백엔드 `app.ai.contracts.Agent` 규격 구현.
+
+백엔드 연결 (oneload-backend README "Swapping one in is a change to create_app() defaults"):
+    create_app(agent=LLMAgent(OpenAILLM(), fallback=RuleAgent()), vision=LLMVision(OpenAILLM()))
 
 흐름 (노드 이름 = docs/STEP05.md 그림의 단계 이름)
 
-    START → understand → fill_slots ─┬─ deny ──────────────────────────→ END  (위험 · 범위 밖)
-                                     ├─ lost ──────────────────────────→ END  (위치 재확인 요청)
-                                     ├─ verify_selected ───────────────→ END  (화면에서 고른 POI 검증)
-                                     ├─ ask_slot ──────────────────────→ END  (빠진 슬롯 되묻기)
-                                     ├─ explain_options ───────────────→ END  ("잘 모르겠어요" → 차이 설명 후 다시 묻기)
-                                     ├─ find_poi ──────────────────────→ END  (목적지 확정 / 장소 되묻기)
-                                     └─ retrieve → compose ─┬──────────→ END  (이용 방법 답변 / 보류)
-                                                            └─ find_poi → END  (답변 + 목적지, 예: 티켓 구매)
+    START → read_photo → understand → update_slots ─┬─ deny ────────────→ END  (위험 · 범위 밖)
+                                                    ├─ relocalize ──────→ END  ("길을 잘못 들었어")
+                                                    ├─ select_poi ──────→ END  (화면에서 고른 장소)
+                                                    ├─ ask_train ───────→ END  (직통 / 일반 되묻기)
+                                                    ├─ explain_options ─→ END  ("잘 모르겠어요" → 자료로 차이 설명)
+                                                    ├─ ask_card ────────→ END  (일반열차 → 교통카드 있나요?)
+                                                    ├─ answer ──────────→ END  (이용 방법: 자료 있으면 답변, 없으면 cannot_answer)
+                                                    ├─ arex_destination → END  (열차 · 카드에 맞는 매표소 / 승강장)
+                                                    └─ find_poi ────────→ END  (그 밖의 장소 검색)
 
 설계 원칙
-- 목적지는 search_pois 가 돌려준 verified POI 에서만 고른다. LLM 이 poi_id 를 만들지 않는다.
-- 이용 방법은 search_knowledge 근거가 있을 때만 답한다. 없으면 needs_review (추측 금지).
-- 승차권 질문은 열차 종류(train_type) 슬롯이 채워져야 답한다. 비어 있으면 되묻고,
-  "잘 모르겠어요" 면 R3 자료로 차이를 설명한 뒤 다시 묻는다.
-- 대화 상태는 Agent 가 들고 있지 않다. 되묻는 중인 의도 · 채운 슬롯은 AgentResponse.slots 로 내보내고,
-  Backend 가 다음 요청의 SessionContext.slots 로 돌려준다.
-- Tool · LLM 장애는 삼키지 않고 올린다 → Backend 가 503 AI_SERVICE_UNAVAILABLE.
+- LLM 은 '이해' 와 '자료 기반 문장' 만 한다. 목적지 · 다음 단계 결정은 코드가 지도 · 슬롯으로 한다.
+- 목적지는 ctx.map 의 verified POI 에서만 고른다 (백엔드 guard 가 한 번 더 막는다).
+- 이용 방법은 검색된 자료가 있을 때만 답한다. 없으면 cannot_answer — 요금 · 시간을 지어내지 않는다.
+- 대화 상태는 Agent 가 들고 있지 않다. 슬롯은 응답의 slots 로 돌려주고, 백엔드가 세션에 저장해 다음 ctx.slots 로 준다.
+- LLM 장애 · 형식 위반이면 fallback(백엔드 RuleAgent)으로 넘긴다. fallback 이 없으면 cannot_answer.
 """
+
 from __future__ import annotations
 
 import logging
-import os
 import re
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Callable, TypedDict
+from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
-from .contracts import AgentResponse, Departure, KnowledgeHit, POI, SessionContext, Source
+from .backend.contracts import (
+    Agent,
+    AgentContext,
+    AgentResponse,
+    AgentResult,
+    Slots,
+    Source,
+    VisionExtractor,
+    VisionUnavailable,
+)
+from .backend.mapdata import Poi
+from .knowledge import DepartureSearch, KnowledgeHit, KnowledgeSearch, ToolUnavailable
 from .llm import LLM, LLMError, LLMUnavailable
-from .tools import DepartureSearch, KnowledgeSearch, PoiSearch, ToolUnavailable
-
-KST = timezone(timedelta(hours=9))
-DEFAULT_TERMINAL = "인천공항1터미널"  # 행선지를 말하지 않았을 때 기준 (D-23, 문장에 기준 터미널을 항상 표시)
 
 log = logging.getLogger("hangil_r2.agent")
 
-MAX_CLARIFY = int(os.getenv("MAX_CLARIFY", "2"))  # 되묻기 상한. 넘으면 목록 직접 선택 유도
-MAX_SUGGEST = 3  # 추천 답변 중 POI 버튼 수 (+ '잘 모르겠어요' 1개)
-REQUIRED_SLOTS = {"ticket": ("train_type",)}  # 주제별 필수 슬롯. 시연 범위 확정 후 추가
-PENDING_KEYS = ("pending_intent", "pending_topic")
+KST = timezone(timedelta(hours=9))
+DEFAULT_TERMINAL = "인천공항1터미널"  # 시각표 기준 (백엔드 Slots 에 행선지 슬롯이 없어 고정, 문장에 항상 표시)
 
-# 고정 문구. ja · zh 는 en 으로 대체 (다국어 범위 확정 후 추가 · 확인 필요)
-MSG = {
-    "deny": {"ko": "안전을 위해 이 요청은 안내할 수 없어요. 역 직원에게 문의해 주세요.",
-             "en": "For your safety we can't help with this request. Please ask station staff."},
-    "scope": {"ko": "한길은 역 안 길 안내와 교통 이용 방법만 도와드려요.",
-              "en": "Hangil helps only with directions and transit use inside the station."},
-    "lost": {"ko": "괜찮아요, 현재 위치부터 다시 확인할게요. 주변 표지판이 보이게 사진을 찍어 주세요.",
-             "en": "No problem, let's find where you are. Please take a photo showing nearby signs."},
-    "ask_where": {"ko": "어디로 가실지 조금 더 알려 주세요. (예: 1번 출구, 직통열차 승차권 판매처)",
-                  "en": "Where would you like to go? (e.g., Exit 1, express train tickets)"},
-    "choose": {"ko": "다음 중 어디로 가실 건가요?", "en": "Which one are you looking for?"},
-    "choose_list": {"ko": "정확히 찾지 못했어요. 목적지 목록에서 직접 골라 주세요.",
-                    "en": "We couldn't pin it down. Please pick your destination from the list."},
-    "unknown_poi": {"ko": "확인되지 않은 목적지예요. 다시 골라 주세요.",
-                    "en": "That destination isn't verified. Please choose again."},
-    "dest_locate": {"ko": "{name}(으)로 안내할게요. 주변 표지판이 보이게 사진을 찍어 주세요.",
-                    "en": "I'll guide you to {name}. Please take a photo showing nearby signs."},
-    "dest_route": {"ko": "{name}(으)로 가는 경로를 찾을게요.", "en": "Finding a route to {name}."},
-    "no_evidence": {"ko": "확인된 안내 자료를 찾지 못했어요. 역 안내센터에 문의해 주세요.",
-                    "en": "We couldn't find verified information. Please ask the information center."},
-    "sources_only": {"ko": "아래 안내 자료를 확인해 주세요.", "en": "Please check the guide below."},
-    "dont_know": {"ko": "잘 모르겠어요", "en": "Not sure"},
-    "ask_train_type": {"ko": "직통열차와 일반열차 중 어떤 승차권인가요?",
-                       "en": "Is it an express train or a regular train ticket?"},
-    "pick_train_type": {"ko": "어떤 승차권으로 안내할까요?", "en": "Which ticket would you like?"},
-    "no_compare": {"ko": "차이를 설명할 확인된 자료가 없어요. 원하시는 승차권을 골라 주세요.",
-                   "en": "We have no verified comparison. Please choose a ticket type."},
-    "fallback": {"ko": "답변을 만들지 못했어요. 잠시 후 다시 시도해 주세요.",
-                 "en": "We couldn't create an answer. Please try again shortly."},
-    # 도착 시각 안내 (시각은 코드가 계산해서 넣는다. LLM 이 시각을 쓰지 않음)
-    "fastest": {"ko": "{dest} 기준 가장 빨리 도착하는 열차: {dep} 출발 {train} ({arr} 도착 예정).",
-                "en": "To {dest}, the earliest arrival is the {dep} {train} (arrives {arr})."},
-    "other_next": {"ko": "다음 {train}: {dep} 출발, {arr} 도착 예정.",
-                   "en": "The next {train} leaves at {dep} and arrives at {arr}."},
-    "chosen_next": {"ko": "다음 {train}: {dep} 출발, {arr} 도착 예정 ({dest} 기준).",
-                    "en": "The next {train} leaves at {dep}, arriving at {arr} ({dest})."},
+MSG = {  # 백엔드 Lang 은 en · ko 두 가지
+    "deny": (
+        "For your safety I can't help with that. Please ask station staff.",
+        "안전을 위해 그 요청은 안내할 수 없어요. 역 직원에게 문의해 주세요.",
+    ),
+    "scope": (
+        "I can help with the Airport Railroad at Seoul Station: tickets, transit cards and the way there.",
+        "지금은 서울역 공항철도 구역을 도와드려요. 승차권 · 교통카드 · 가는 길을 물어보세요.",
+    ),
+    "relocalize": (
+        "No problem. I won't guess where you are; let's check again with a photo of a nearby sign.",
+        "괜찮아요. 위치를 짐작하지 않고, 주변 안내판 사진으로 다시 확인할게요.",
+    ),
+    "ask_train": (
+        "Two AREX trains go to Incheon Airport. Which one do you want?",
+        "인천공항까지는 공항철도 열차가 두 종류예요. 어떤 열차로 갈까요?",
+    ),
+    "pick_train": ("Which train would you like?", "어떤 열차로 안내할까요?"),
+    "no_compare": (
+        "I don't have a verified comparison, so I won't compare them. Which train would you like?",
+        "확인된 비교 자료가 없어서 비교하지 않을게요. 어떤 열차로 갈까요?",
+    ),
+    "ask_card": (
+        "For the All-stop train you tap a transit card at the gate. Do you have one?",
+        "일반열차는 개찰구에서 교통카드를 찍어요. 교통카드가 있나요?",
+    ),
+    "no_evidence": (
+        "I don't have verified information on that, so I won't guess. Please ask the information center.",
+        "확인된 자료가 없어서 추측하지 않을게요. 역 안내센터에 문의해 주세요.",
+    ),
+    "sources_only": ("Please check the guide below.", "아래 안내 자료를 확인해 주세요."),
+    "unknown_place": (
+        "I couldn't find that place on the verified map. Where would you like to go?",
+        "확인된 지도에서 그 장소를 찾지 못했어요. 어디로 가고 싶으세요?",
+    ),
+    "choose_place": ("Which one do you mean?", "어느 곳을 찾으세요?"),
+    "dest": ("I'll take you to the {name}, on {floor}.", "{name}(으)로 안내할게요. {floor}에 있어요."),
+    "go_now": ("You're already located, so we can go now.", "위치가 확인돼 있어 바로 출발할 수 있어요."),
+    "locate_first": (
+        "First, take a photo of a nearby sign to confirm where you are.",
+        "먼저 주변 안내판을 찍어서 지금 위치를 확인해 주세요.",
+    ),
+    "go_to": ("Go to the {name}", "{name}(으)로 가기"),
+    "fallback": (
+        "I couldn't make an answer right now. Please try again shortly.",
+        "지금은 답변을 만들지 못했어요. 잠시 후 다시 시도해 주세요.",
+    ),
+    "unverified_compare": ("Fares and travel times aren't verified yet.", "요금 · 소요시간은 아직 확인 전이에요."),
+    "fastest": (
+        "Earliest arrival ({dest}): {dep} {train}, arrives {arr}.",
+        "가장 빨리 도착 ({dest} 기준): {dep} 출발 {train}, {arr} 도착 예정",
+    ),
+    "next_other": ("Next {train}: leaves {dep}, arrives {arr}.", "다음 {train}: {dep} 출발, {arr} 도착 예정"),
 }
-
+BUTTONS = {
+    "express": ("Express", "직통열차"),
+    "allstop": ("All-stop", "일반열차"),
+    "unsure": ("Not sure", "잘 모르겠어요"),
+    "card_yes": ("I have a transit card", "교통카드 있어요"),
+    "card_no": ("I don't have one", "없어요"),
+    "card_what": ("What's a transit card?", "교통카드가 뭐예요?"),
+    "airport": ("Incheon Airport", "인천공항"),
+    "pay": ("How do I pay?", "돈은 어떻게 내요?"),
+}
+TRAIN_NAME = {"express": ("Express train", "직통열차"), "allstop": ("All-stop train", "일반열차")}
 DEST_EN = {"인천공항1터미널": "Incheon Airport T1", "인천공항2터미널": "Incheon Airport T2"}
 
-# 슬롯 값 → 버튼 · 검색어에 쓰는 이름
-SLOT_LABELS = {"train_type": {"express": {"ko": "직통열차", "en": "Express train"},
-                              "general": {"ko": "일반열차", "en": "Regular train"}}}
-SLOT_QUESTIONS = {"train_type": "ask_train_type"}
 
-
-def t(key: str, lang: str, **kw) -> str:
-    table = MSG[key]
-    return table.get(lang, table["en"]).format(**kw)
-
-
-def label(slot: str, value: str, lang: str) -> str:
-    names = SLOT_LABELS[slot][value]
-    return names.get(lang, names["en"])
-
-
-def poi_name(p: POI, lang: str) -> str:
-    return p.name_ko if lang == "ko" or not p.name_en else p.name_en
+def say(pair: tuple[str, str], lang: str, **kw) -> str:
+    return (pair[0] if lang == "en" else pair[1]).format(**kw)
 
 
 class State(TypedDict, total=False):
-    ctx: SessionContext
+    ctx: AgentContext
     message: str
+    image: bytes | None
     selected_poi_id: str | None
-    intent: str
-    topic: str | None
-    blocked: bool
-    unsure: bool  # "잘 모르겠어요"
-    new_slots: dict  # 이번 질문에서 뽑은 슬롯
-    slots: dict  # 이전 슬롯 + 이번 슬롯 (pending 제외)
-    missing: list[str]  # 아직 비어 있는 필수 슬롯
-    poi_query: str | None
-    knowledge_query: str | None
-    hits: list[KnowledgeHit]
-    answer_text: str | None  # compose 결과 (이용 방법 답변)
+    photo: str | None  # 사진에서 읽힌 내용 요약 (understand 에 전달)
+    u: dict  # understand 결과
+    slots: Slots
+    new_slot: bool  # 이번 말로 슬롯이 채워졌나 (짧은 대답 이어 가기)
+    retrieved: set  # 이번 턴에 실제로 검색된 문서 id (백엔드 guard 가 인용을 이 안으로 제한)
     result: dict  # 최종 AgentResponse
 
 
-class Agent:
-    def __init__(self, llm: LLM, search_knowledge: KnowledgeSearch, search_pois: PoiSearch,
-                 get_departures: DepartureSearch | None = None, origin_station: str = "서울역",
-                 clock: Callable[[], datetime] | None = None):
-        """get_departures 가 없으면 도착 시각 안내 없이 동작한다. clock 은 테스트에서 시각 고정용."""
-        self.llm, self.search_knowledge, self.search_pois = llm, search_knowledge, search_pois
+class LLMAgent:
+    def __init__(
+        self,
+        llm: LLM,
+        search_knowledge: KnowledgeSearch | None = None,
+        vision: VisionExtractor | None = None,
+        fallback: Agent | None = None,
+        get_departures: DepartureSearch | None = None,
+        origin_station: str = "서울역",
+        clock: Callable[[], datetime] | None = None,
+    ):
+        """search_knowledge 가 없으면 이용 방법 질문은 cannot_answer. get_departures 는 공식 시각표가 생기기 전까지 넘기지 않는다."""
+        self.llm, self.search_knowledge, self.vision, self.fallback = llm, search_knowledge, vision, fallback
         self.get_departures, self.origin_station = get_departures, origin_station
         self.clock = clock or (lambda: datetime.now(KST))
         self.graph = self._build()
 
-    # ── 진입점 (Backend 가 호출) ────────────────────────────────────────
-    def handle_message(self, session_context: SessionContext, message: str,
-                       selected_poi_id: str | None) -> AgentResponse:
-        lang = session_context.language
+    # ── 진입점 (백엔드 POST /messages 가 호출) ─────────────────────────
+    def handle_message(
+        self, ctx: AgentContext, message: str, image: bytes | None, selected_poi_id: str | None
+    ) -> AgentResult:
         try:
-            out = self.graph.invoke({"ctx": session_context, "message": message.strip(),
-                                     "selected_poi_id": selected_poi_id})
-            result = dict(out["result"])
-            result.setdefault("slots", out.get("slots", {}))  # 되묻기 노드는 pending 을 직접 넣음
-            return AgentResponse.model_validate(result)
-        except (LLMUnavailable, ToolUnavailable):
-            raise  # 외부 장애 → Backend 503
-        except (LLMError, ValidationError) as exc:  # 형식 위반 → 보류 (추측해서 답하지 않음)
-            log.warning("agent_fallback session=%s err=%s", session_context.session_id, exc)
-            return AgentResponse(status="needs_review", intent="unknown",
-                                 assistant_message=t("fallback", lang), next_action="none")
+            out = self.graph.invoke(
+                {
+                    "ctx": ctx,
+                    "message": (message or "").strip(),
+                    "image": image,
+                    "selected_poi_id": selected_poi_id,
+                    "retrieved": set(),
+                }
+            )
+            response = AgentResponse.model_validate({**out["result"], "slots": out["slots"].model_dump()})
+            return AgentResult(response, frozenset(out["retrieved"]))
+        except (LLMError, ValidationError) as exc:  # LLMUnavailable 포함
+            log.warning("agent_fallback err=%s: %s", type(exc).__name__, exc)
+            if self.fallback is not None:
+                return self.fallback.handle_message(ctx, message, image, selected_poi_id)
+            return AgentResult(
+                AgentResponse(
+                    status="cannot_answer",
+                    intent="out_of_scope",
+                    assistant_message=say(MSG["fallback"], ctx.language),
+                    slots=ctx.slots.model_dump(),
+                    next_action="none",
+                ),
+                frozenset(),
+            )
 
     # ── 그래프 ───────────────────────────────────────────────────────
     def _build(self):
         g = StateGraph(State)
-        for name in ("understand", "fill_slots", "deny", "lost", "verify_selected", "ask_slot",
-                     "explain_options", "find_poi", "retrieve", "compose"):
+        names = (
+            "read_photo",
+            "understand",
+            "update_slots",
+            "deny",
+            "relocalize",
+            "select_poi",
+            "ask_train",
+            "explain_options",
+            "ask_card",
+            "answer",
+            "arex_destination",
+            "find_poi",
+        )
+        for name in names:
             g.add_node(name, getattr(self, f"_{name}"))
-        g.add_edge(START, "understand")
-        g.add_edge("understand", "fill_slots")
-        g.add_conditional_edges("fill_slots", self._after_slots,
-                                ["deny", "lost", "verify_selected", "ask_slot", "explain_options",
-                                 "find_poi", "retrieve"])
-        g.add_edge("retrieve", "compose")
-        g.add_conditional_edges("compose", self._after_compose, ["find_poi", END])
-        for n in ("deny", "lost", "verify_selected", "ask_slot", "explain_options", "find_poi"):
+        g.add_edge(START, "read_photo")
+        g.add_edge("read_photo", "understand")
+        g.add_edge("understand", "update_slots")
+        g.add_conditional_edges("update_slots", self._route, list(names[3:]))
+        for n in names[3:]:
             g.add_edge(n, END)
         return g.compile()
 
-    # ── 노드 ─────────────────────────────────────────────────────────
+    # ── 노드: 이해 ───────────────────────────────────────────────────
+    def _read_photo(self, s: State):
+        if not s.get("image") or self.vision is None:
+            return {"photo": None}
+        try:
+            f = self.vision.extract(s["image"])
+        except VisionUnavailable:
+            return {"photo": None}  # 사진 없이 말로만 처리
+        texts = ", ".join(t.text for t in f.texts) or "-"
+        return {"photo": f"상태: {f.image_quality} / 글자: {texts} / 시설: {', '.join(f.facilities) or '-'}"}
+
     def _understand(self, s: State):
-        if s.get("selected_poi_id"):  # 화면에서 고른 목적지 → LLM 해석 불필요
-            return {"intent": "navigate_to_poi", "blocked": False, "topic": None, "unsure": False, "new_slots": {}}
-        u = self.llm.understand(s["message"], s["ctx"].recent_messages, s["ctx"].language)
-        return {"intent": u["intent"], "blocked": u["blocked"], "topic": u.get("topic"),
-                "unsure": u.get("unsure", False), "new_slots": u.get("slots") or {},
-                "poi_query": u["poi_query"] or s["message"], "knowledge_query": u["knowledge_query"] or s["message"]}
-
-    def _fill_slots(self, s: State):
-        """이전 슬롯과 합치고, 되묻던 질문의 짧은 대답("직통열차", "잘 모르겠어요")을 원래 의도로 이어 붙인다."""
-        prev = dict(s["ctx"].slots)
-        pending_intent, pending_topic = prev.pop("pending_intent", None), prev.pop("pending_topic", None)
-        new = {k: v for k, v in (s.get("new_slots") or {}).items() if v}
-        slots = {**prev, **new}
-        intent, topic = s["intent"], s.get("topic")
-        answered_pending = bool(new) or s.get("unsure")
-        if pending_intent and not s.get("blocked") and intent in ("out_of_scope", "navigate_to_poi") and answered_pending:
-            intent, topic = pending_intent, pending_topic
-            # 원래 질문의 검색어는 남아 있지 않으므로 슬롯으로 다시 만든다
-            s_query = "승차권" if topic == "ticket" else s["message"]
-            update = {"poi_query": s_query, "knowledge_query": f"{s_query} 구매 방법"}
-        else:
-            update = {}
-        if intent == "ticket_purchase_and_navigation":
-            topic = "ticket"
-        needs = REQUIRED_SLOTS.get(topic, ()) if intent in ("ask_procedure", "ticket_purchase_and_navigation") else ()
-        missing = [k for k in needs if not slots.get(k)]
-        return {"intent": intent, "topic": topic, "slots": slots, "missing": missing, **update}
-
-    def _deny(self, s: State):
-        key = "deny" if s.get("blocked") else "scope"
-        return {"result": {"status": "denied", "intent": s["intent"],
-                           "assistant_message": t(key, s["ctx"].language), "next_action": "none"}}
-
-    def _lost(self, s: State):
-        return {"result": {"status": "needs_location", "intent": "report_lost",
-                           "assistant_message": t("lost", s["ctx"].language), "next_action": "locate"}}
-
-    def _verify_selected(self, s: State):
+        if s.get("selected_poi_id"):  # 화면 버튼으로 고른 장소 → 해석 불필요
+            return {
+                "u": {
+                    "intent": "navigate_to_poi",
+                    "topic": None,
+                    "train_type": None,
+                    "has_transit_card": None,
+                    "unsure": False,
+                    "blocked": False,
+                    "poi_query": None,
+                    "knowledge_query": None,
+                }
+            }
         ctx = s["ctx"]
-        found = self.search_pois(ctx.map_id, "", {"poi_id": s["selected_poi_id"], "verified": True})
-        if not found:
-            return {"result": {"status": "needs_clarification", "intent": s["intent"],
-                               "assistant_message": t("unknown_poi", ctx.language), "next_action": "reply"}}
-        return {"result": self._destination(s, found[0], sources=[])}
+        return {"u": self.llm.understand(s["message"], ctx.recent_messages, ctx.language, s.get("photo"))}
 
-    def _ask_slot(self, s: State):
-        """빠진 필수 슬롯 하나를 버튼과 함께 묻는다. 버튼은 텍스트로 답이 돌아오도록 poi_id 없이 만든다."""
-        lang, slot = s["ctx"].language, s["missing"][0]
-        return {"result": {"status": "needs_clarification", "intent": s["intent"],
-                           "assistant_message": t(SLOT_QUESTIONS[slot], lang),
-                           "suggested_replies": self._slot_buttons(slot, lang, with_unsure=True),
-                           "next_action": "reply", "slots": self._pending(s)}}
+    def _update_slots(self, s: State):
+        # 백엔드는 자기 Slots 클래스로 넘긴다. 사본 클래스와 이름만 같고 다른 클래스라 dict 를 거쳐 바꾼다.
+        u, slots = s["u"], Slots.model_validate(s["ctx"].slots.model_dump())
+        new = False
+        if u["train_type"] and u["train_type"] != slots.train_type:
+            slots.train_type, new = u["train_type"], True
+        if u["has_transit_card"] and u["has_transit_card"] != slots.has_transit_card:
+            slots.has_transit_card, new = u["has_transit_card"], True
+        return {"slots": slots, "new_slot": new}
+
+    def _route(self, s: State) -> str:
+        u, slots = s["u"], s["slots"]
+        if u["blocked"]:
+            return "deny"
+        if u["intent"] == "report_off_route":
+            return "relocalize"
+        if s.get("selected_poi_id"):
+            return "select_poi"
+        train_unknown = slots.train_type == "unknown"
+        if u["intent"] in ("usage_question", "payment_question"):
+            if u["topic"] == "tickets" and train_unknown:  # 어떤 열차 표인지 알아야 답이 정해짐
+                return "explain_options" if u["unsure"] else "ask_train"
+            return "answer"
+        arex = (
+            u["intent"] == "ticket_purchase_and_navigation"
+            or u["topic"] in ("tickets", "platform")
+            or s.get("new_slot")
+            or u["unsure"]
+        )
+        if arex:
+            if train_unknown:
+                return "explain_options" if u["unsure"] else "ask_train"
+            if slots.train_type == "allstop" and slots.has_transit_card == "unknown" and u["topic"] != "platform":
+                return "ask_card"
+            return "arex_destination"
+        if u["intent"] == "navigate_to_poi":
+            return "find_poi"
+        return "deny"  # out_of_scope
+
+    # ── 노드: 응답 ───────────────────────────────────────────────────
+    def _deny(self, s: State):
+        lang = s["ctx"].language
+        blocked = s["u"]["blocked"]
+        return {
+            "result": {
+                "status": "out_of_scope",
+                "intent": "out_of_scope",
+                "assistant_message": say(MSG["deny" if blocked else "scope"], lang),
+                "suggested_replies": [] if blocked else self._buttons(lang, "airport", "pay"),
+                "next_action": "none",
+            }
+        }
+
+    def _relocalize(self, s: State):
+        return {
+            "result": {
+                "status": "relocalize",
+                "intent": "report_off_route",
+                "assistant_message": say(MSG["relocalize"], s["ctx"].language),
+                "next_action": "locate",
+            }
+        }
+
+    def _select_poi(self, s: State):
+        ctx, slots = s["ctx"], s["slots"].model_copy()
+        poi = ctx.map.verified_poi(s["selected_poi_id"])
+        if poi is None:
+            return {"result": self._clarify(ctx.language, MSG["unknown_place"], "navigate_to_poi")}
+        if poi.train_type:
+            slots.train_type = poi.train_type
+        return {"slots": slots, "result": self._destination(s, poi, "navigate_to_poi")}
+
+    def _ask_train(self, s: State):
+        lang = s["ctx"].language
+        intent = s["u"]["intent"] if s["u"]["intent"] != "out_of_scope" else "ticket_purchase_and_navigation"
+        return {
+            "result": {
+                **self._clarify(lang, MSG["ask_train"], intent),
+                "suggested_replies": self._buttons(lang, "express", "allstop", "unsure"),
+            }
+        }
 
     def _explain_options(self, s: State):
-        """'잘 모르겠어요' → R3 자료로 선택지 차이를 설명하고 다시 묻는다 (자료 없으면 설명 없이 다시 묻기)."""
-        ctx, lang, slot = s["ctx"], s["ctx"].language, s["missing"][0]
-        names = " ".join(label(slot, v, "ko") for v in SLOT_LABELS[slot])
-        hits = [h for h in self.search_knowledge(f"{names} 차이 비교", lang,
-                                                 {"map_id": ctx.map_id, "intent": "compare"}) if h.excerpt.strip()][:3]
-        arrival, tt_source = self._arrival_text(s, chosen=None)  # 두 열차 중 가장 빨리 도착하는 열차
-        parts = [self._compose_text(f"{names} 차이", hits, lang)] if hits else [t("no_compare", lang)]
-        if arrival:
-            parts.append(arrival)
+        """'잘 모르겠어요' → 자료로 차이 설명 (+ 시각표가 있으면 도착 시각) 후 다시 묻기."""
+        lang = s["ctx"].language
+        hits = self._search(s, say(("Express vs All-stop difference", "직통열차 일반열차 차이"), lang))
+        items, sources, notes = [], self._sources(hits), []
         if hits:
-            parts.append(t("pick_train_type", lang))
-        sources = self._sources(hits) + ([tt_source] if tt_source else [])
-        return {"result": {"status": "needs_clarification", "intent": s["intent"],
-                           "assistant_message": " ".join(parts)[:800],
-                           "suggested_replies": self._slot_buttons(slot, lang, with_unsure=False),
-                           "sources": sources, "next_action": "reply", "slots": self._pending(s)}}
+            message = f"{self._compose(s, hits)} {say(MSG['pick_train'], lang)}"
+        else:
+            message, notes = say(MSG["no_compare"], lang), [say(MSG["unverified_compare"], lang)]
+        arrival = self._arrival_items(s)
+        if arrival:
+            items, src = arrival
+            sources.append(src)
+            s["retrieved"].add(src["document_id"])
+        return {
+            "result": {
+                "status": "needs_clarification",
+                "intent": "ticket_purchase_and_navigation",
+                "assistant_message": message[:800],
+                "items": items,
+                "unverified_notes": notes,
+                "suggested_replies": self._buttons(lang, "express", "allstop"),
+                "sources": sources,
+                "next_action": "reply",
+            },
+            "retrieved": s["retrieved"],
+        }
 
-    def _retrieve(self, s: State):
-        ctx = s["ctx"]
-        hits = self.search_knowledge(self._with_slots(s["knowledge_query"], s), ctx.language,
-                                     {"map_id": ctx.map_id, "intent": s["intent"], "slots": s.get("slots", {})})
-        return {"hits": [h for h in hits if h.excerpt.strip()][:4]}
+    def _ask_card(self, s: State):
+        lang = s["ctx"].language
+        return {
+            "result": {
+                **self._clarify(lang, MSG["ask_card"], "payment_question"),
+                "suggested_replies": self._buttons(lang, "card_yes", "card_no", "card_what"),
+            }
+        }
 
-    def _compose(self, s: State):
-        hits, lang = s.get("hits") or [], s["ctx"].language
+    def _answer(self, s: State):
+        """이용 방법 · 결제 질문: 자료가 있으면 인용해서 답하고, 없으면 cannot_answer."""
+        ctx, u, lang = s["ctx"], s["u"], s["ctx"].language
+        hits = self._search(s, self._with_slots(u["knowledge_query"] or s["message"], s["slots"], lang))
+        if u["topic"] == "fare":  # '직통열차' 같은 단어로 구매 안내 문서가 걸려도 요금 근거는 아니다
+            hits = [h for h in hits if h.scope == "fare"]
         if not hits:
-            if s["intent"] == "ask_procedure":  # 근거 없음 → 보류
-                return {"answer_text": None, "result": {"status": "needs_review", "intent": s["intent"],
-                                                        "assistant_message": t("no_evidence", lang),
-                                                        "next_action": "none"}}
-            return {"answer_text": None}  # 티켓+길 안내: 목적지 찾기는 계속
-        text = self._compose_text(s["message"], hits, lang)[:600]
-        if s["intent"] == "ask_procedure":
-            return {"answer_text": text, "result": {"status": "answered", "intent": s["intent"],
-                                                    "assistant_message": text, "sources": self._sources(hits),
-                                                    "next_action": "none"}}
-        return {"answer_text": text}
+            return {
+                "result": {
+                    "status": "cannot_answer",
+                    "intent": u["intent"],
+                    "assistant_message": say(MSG["no_evidence"], lang),
+                    "next_action": "none",
+                },
+                "retrieved": s["retrieved"],
+            }
+        replies = []
+        if u["topic"] == "tickets" and s["slots"].train_type != "unknown":  # 표 사는 곳으로 바로 가는 버튼
+            poi = self._arex_poi(ctx, s["slots"].train_type, "tickets")
+            if poi:
+                replies = [{"label": say(MSG["go_to"], lang, name=poi.name(lang))[:40], "selected_poi_id": poi.poi_id}]
+        return {
+            "result": {
+                "status": "answered",
+                "intent": u["intent"],
+                "assistant_message": self._compose(s, hits),
+                "sources": self._sources(hits),
+                "suggested_replies": replies,
+                "next_action": "none",
+            },
+            "retrieved": s["retrieved"],
+        }
+
+    def _arex_destination(self, s: State):
+        ctx, slots, u = s["ctx"], s["slots"], s["u"]
+        if slots.train_type == "allstop":
+            category = "platform" if (slots.has_transit_card == "yes" or u["topic"] == "platform") else "tickets"
+        else:
+            category = "platform" if u["topic"] == "platform" else "tickets"
+        poi = self._arex_poi(ctx, slots.train_type, category)
+        if poi is None:
+            return {"result": self._clarify(ctx.language, MSG["unknown_place"], "navigate_to_poi")}
+        intent = "payment_question" if s.get("new_slot") and u["has_transit_card"] else "ticket_purchase_and_navigation"
+        answer = None
+        if category == "tickets":  # 표 사는 곳으로 갈 때는 사는 방법 자료도 함께
+            hits = self._search(
+                s, self._with_slots(say(("how to buy a ticket", "승차권 구매 방법"), ctx.language), slots, ctx.language)
+            )
+            if hits:
+                answer = (self._compose(s, hits), self._sources(hits))
+        return {"result": self._destination(s, poi, intent, answer), "retrieved": s["retrieved"]}
 
     def _find_poi(self, s: State):
         ctx, lang = s["ctx"], s["ctx"].language
-        if s.get("missing"):  # 되묻기 상한 초과 → 해당 종류의 장소를 목록으로 보여 줌
-            pois = self.search_pois(ctx.map_id, "", {"category": "ticket_office", "verified": True})
-        else:
-            pois = self.search_pois(ctx.map_id, self._with_slots(s["poi_query"], s), {"verified": True})
-        pois = [p for p in pois if p.verified]
-        sources = self._sources(s.get("hits") or [])
-        if len(pois) == 1 and not s.get("missing"):
-            return {"result": self._destination(s, pois[0], sources)}
+        pois = ctx.map.search_pois(s["u"]["poi_query"] or "") if s["u"]["poi_query"] else []
+        if len(pois) == 1:
+            return {"result": self._destination(s, pois[0], "navigate_to_poi")}
         if not pois:
-            if s.get("answer_text"):  # 장소는 못 찾았지만 이용 방법 답은 있음
-                return {"result": {"status": "answered", "intent": s["intent"], "assistant_message": s["answer_text"],
-                                   "sources": sources, "next_action": "none"}}
-            return {"result": {"status": "needs_clarification", "intent": s["intent"],
-                               "assistant_message": t("ask_where", lang), "next_action": "reply"}}
-        # 후보 여러 개 → 장소 되묻기. 상한을 넘으면 목록 직접 선택으로 유도
-        key = "choose_list" if self._asked(ctx) >= MAX_CLARIFY or s.get("missing") else "choose"
-        replies = [{"label": poi_name(p, lang)[:40], "selected_poi_id": p.poi_id} for p in pois[:MAX_SUGGEST]]
-        replies.append({"label": t("dont_know", lang), "selected_poi_id": None})
-        msg = t(key, lang) if not s.get("answer_text") else f"{s['answer_text']} {t(key, lang)}"
-        return {"result": {"status": "needs_clarification", "intent": s["intent"], "assistant_message": msg[:800],
-                           "suggested_replies": replies, "next_action": "reply"}}
-
-    # ── 분기 ─────────────────────────────────────────────────────────
-    def _after_slots(self, s: State) -> str:
-        if s.get("blocked") or s["intent"] == "out_of_scope":
-            return "deny"
-        if s["intent"] == "report_lost":
-            return "lost"
-        if s.get("selected_poi_id"):
-            return "verify_selected"
-        if s.get("missing"):
-            if self._asked(s["ctx"]) >= MAX_CLARIFY:
-                return "find_poi"  # 계속 못 고르면 목록에서 직접 고르게
-            return "explain_options" if s.get("unsure") else "ask_slot"
-        if s["intent"] == "navigate_to_poi":
-            return "find_poi"
-        return "retrieve"  # ask_procedure · ticket_purchase_and_navigation
-
-    @staticmethod
-    def _after_compose(s: State) -> str:
-        return END if s.get("result") else "find_poi"
+            return {"result": self._clarify(lang, MSG["unknown_place"], "navigate_to_poi")}
+        replies = [{"label": p.name(lang)[:40], "selected_poi_id": p.poi_id} for p in pois[:3]]
+        return {"result": {**self._clarify(lang, MSG["choose_place"], "navigate_to_poi"), "suggested_replies": replies}}
 
     # ── 도우미 ───────────────────────────────────────────────────────
     @staticmethod
-    def _asked(ctx: SessionContext) -> int:
-        return sum(1 for m in ctx.recent_messages if m.role == "assistant" and m.status == "needs_clarification")
+    def _clarify(lang: str, pair: tuple[str, str], intent: str) -> dict:
+        return {
+            "status": "needs_clarification",
+            "intent": intent,
+            "assistant_message": say(pair, lang),
+            "next_action": "reply",
+        }
 
     @staticmethod
-    def _pending(s: State) -> dict:
-        return {**s.get("slots", {}), "pending_intent": s["intent"], "pending_topic": s.get("topic") or ""}
+    def _buttons(lang: str, *keys: str) -> list[dict]:
+        return [{"label": say(BUTTONS[k], lang), "selected_poi_id": None} for k in keys]
 
     @staticmethod
-    def _slot_buttons(slot: str, lang: str, with_unsure: bool) -> list[dict]:
-        buttons = [{"label": label(slot, v, lang), "selected_poi_id": None} for v in SLOT_LABELS[slot]]
-        if with_unsure:
-            buttons.append({"label": t("dont_know", lang), "selected_poi_id": None})
-        return buttons
+    def _arex_poi(ctx: AgentContext, train_type: str, category: str) -> Poi | None:
+        """열차 종류 · 분류로 지도의 verified POI 를 찾는다 (POI id 를 코드에 박지 않음)."""
+        return next(
+            (p for p in ctx.map.pois if p.verified and p.train_type == train_type and p.category == category), None
+        )
 
     @staticmethod
-    def _with_slots(query: str | None, s: State) -> str:
-        """검색어에 채운 슬롯 이름을 붙인다. 예: '승차권' + express → '승차권 직통열차'."""
-        q = query or s["message"]
-        for slot, value in (s.get("slots") or {}).items():
-            if slot in SLOT_LABELS and value in SLOT_LABELS[slot]:
-                name = label(slot, value, "ko")
-                if name not in q:
-                    q = f"{name} {q}"
-        return q
+    def _with_slots(query: str, slots: Slots, lang: str) -> str:
+        """검색어에 슬롯 이름을 붙인다. 예: '승차권 구매 방법' + express → '직통열차 승차권 구매 방법'."""
+        if slots.train_type in TRAIN_NAME:
+            name = say(TRAIN_NAME[slots.train_type], lang)
+            if name.lower() not in query.lower():
+                query = f"{name} {query}"
+        return query
 
-    def _compose_text(self, question: str, hits: list[KnowledgeHit], lang: str) -> str:
-        """자료 근거 답변. 인용 번호가 없거나 범위 밖이면 자료 제목만 안내하는 폴백."""
+    def _search(self, s: State, query: str) -> list[KnowledgeHit]:
+        """R3 검색. 도구가 없거나 장애면 빈 결과 (근거 없음 → 보류)."""
+        if self.search_knowledge is None:
+            return []
+        ctx = s["ctx"]
         try:
-            text = self.llm.compose(question, hits, lang)
+            hits = self.search_knowledge(
+                query, ctx.language, {"map_id": ctx.map.map_id, "slots": s["slots"].model_dump()}
+            )
+        except ToolUnavailable as exc:
+            log.warning("knowledge_unavailable %s", exc)
+            return []
+        hits = [h for h in hits if h.excerpt.strip()][:3]
+        s["retrieved"].update(h.document_id for h in hits)
+        return hits
+
+    def _compose(self, s: State, hits: list[KnowledgeHit]) -> str:
+        """자료 근거 문장. 인용 번호가 없거나 범위 밖이면 '자료를 확인해 주세요' 로 대체 (LLM 장애는 위로 올림)."""
+        lang = s["ctx"].language
+        try:
+            text = self.llm.compose(s["message"] or "-", hits, lang)
             cited = {int(n) for n in re.findall(r"\[(\d+)\]", text)}
             if not cited or not cited <= set(range(1, len(hits) + 1)):
                 raise LLMError(f"인용 번호 위반: {cited}")
-            return text
+            return text[:600]
         except LLMUnavailable:
             raise
         except LLMError as exc:
             log.warning("compose_fallback %s", exc)
-            return t("sources_only", lang)
+            return say(MSG["sources_only"], lang)
 
     @staticmethod
     def _sources(hits: list[KnowledgeHit]) -> list[dict]:
-        return [Source(document_id=h.document_id, title=h.title, source_url=h.source_url,
-                       verified_at=h.verified_at).model_dump() for h in hits[:4]]
+        return [
+            Source(
+                document_id=h.document_id, title=h.title, source_url=h.source_url, verified_at=h.verified_at
+            ).model_dump()
+            for h in hits[:3]
+        ]
 
-    def _terminal(self, s: State) -> str:
-        """행선지 슬롯 → 시각표의 도착역 이름. 2터미널을 말했을 때만 2터미널, 그 외는 기본값."""
-        raw = (s.get("slots") or {}).get("terminal") or ""
-        if re.search(r"(2|제2|두\s*번째)\s*(터미널|여객)|t2|terminal\s*2", raw.lower()):
-            return "인천공항2터미널"
-        return DEFAULT_TERMINAL
+    def _destination(self, s: State, poi: Poi, intent: str, answer: tuple[str, list] | None = None) -> dict:
+        ctx, lang = s["ctx"], s["ctx"].language
+        floor = ctx.map.node_by_id[poi.node_id].floor_id
+        msg = say(MSG["dest"], lang, name=poi.name(lang), floor=floor)
+        here = ctx.confirmed_node_id is not None
+        msg += " " + say(MSG["go_now" if here else "locate_first"], lang)
+        sources = []
+        if answer:
+            msg, sources = f"{answer[0]} {msg}", answer[1]
+        return {
+            "status": "destination_set",
+            "intent": intent,
+            "assistant_message": msg[:800],
+            "destination": {"poi_id": poi.poi_id},
+            "sources": sources,
+            "next_action": "navigate" if here else "locate",
+        }
 
-    def _arrival_text(self, s: State, chosen: str | None) -> tuple[str | None, dict | None]:
-        """시각표로 도착 시각 안내 문장을 만든다 (남은 좌석은 다루지 않음 — D-21).
-
-        chosen=None : 두 열차 중 가장 빨리 '도착'하는 열차 + 다른 종류의 다음 열차
-        chosen=값   : 고른 열차 종류의 다음 열차
-        보조 정보라서 도구 장애 · 데이터 없음이면 문장 없이 넘어간다 (본 답변은 그대로).
-        """
+    def _arrival_items(self, s: State) -> tuple[list[str], dict] | None:
+        """[선택] 시각표 기준 가장 빨리 '도착' 하는 열차 (출발이 아니라 도착 시각으로 비교). 남은 좌석은 다루지 않음."""
         if self.get_departures is None:
-            return None, None
-        lang, dest = s["ctx"].language, self._terminal(s)
+            return None
+        lang, now = s["ctx"].language, self.clock()
         try:
-            deps: list[Departure] = self.get_departures(self.origin_station, dest, self.clock(), 3)
+            deps = [
+                d for d in self.get_departures(self.origin_station, DEFAULT_TERMINAL, now, 3) if d.departs_at >= now
+            ]
         except (ToolUnavailable, ValidationError) as exc:
             log.warning("departures_unavailable %s", exc)
-            return None, None
-        now = self.clock()
-        deps = [d for d in deps if d.departs_at >= now]
-        if chosen:
-            deps = [d for d in deps if d.train_type == chosen]
+            return None
         if not deps:
-            return None, None
-        hm = lambda d: d.astimezone(KST).strftime("%H:%M")  # noqa: E731
-        dest_name = dest if lang == "ko" else DEST_EN.get(dest, dest)
-        first = min(deps, key=lambda d: d.arrives_at)  # 출발이 아니라 도착 시각으로 비교
-        if chosen:
-            text = t("chosen_next", lang, train=label("train_type", chosen, lang), dep=hm(first.departs_at),
-                     arr=hm(first.arrives_at), dest=dest_name)
-        else:
-            text = t("fastest", lang, dest=dest_name, train=label("train_type", first.train_type, lang),
-                     dep=hm(first.departs_at), arr=hm(first.arrives_at))
-            others = [d for d in deps if d.train_type != first.train_type]
-            if others:
-                o = min(others, key=lambda d: d.arrives_at)
-                text += " " + t("other_next", lang, train=label("train_type", o.train_type, lang),
-                                dep=hm(o.departs_at), arr=hm(o.arrives_at))
-        src = Source(document_id="timetable", title=first.source_title, source_url=first.source_url,
-                     verified_at=first.verified_at).model_dump()
-        return text, src
-
-    def _destination(self, s: State, poi: POI, sources: list[dict]) -> dict:
-        ctx, lang = s["ctx"], s["ctx"].language
-        name = poi_name(poi, lang)
-        has_loc = ctx.confirmed_location is not None
-        msg = t("dest_route" if has_loc else "dest_locate", lang, name=name)
-        train = (s.get("slots") or {}).get("train_type")
-        if s.get("topic") == "ticket" and train:  # 고른 열차의 다음 출발 · 도착 시각
-            arrival, tt_source = self._arrival_text(s, chosen=train)
-            if arrival:
-                msg = f"{arrival} {msg}"
-                sources = sources[:3] + [tt_source]
-        if s.get("answer_text"):
-            msg = f"{s['answer_text']} {msg}"
-        return {"status": "destination_set", "intent": s["intent"], "assistant_message": msg[:800],
-                "destination": {"poi_id": poi.poi_id, "display_name": name}, "sources": sources,
-                "next_action": "navigate" if has_loc else "locate"}
+            return None
+        hm = lambda t: t.astimezone(KST).strftime("%H:%M")  # noqa: E731
+        dest = DEFAULT_TERMINAL if lang == "ko" else DEST_EN[DEFAULT_TERMINAL]
+        first = min(deps, key=lambda d: d.arrives_at)
+        items = [
+            say(
+                MSG["fastest"],
+                lang,
+                dest=dest,
+                dep=hm(first.departs_at),
+                train=say(TRAIN_NAME[first.train_type], lang),
+                arr=hm(first.arrives_at),
+            )
+        ]
+        others = [d for d in deps if d.train_type != first.train_type]
+        if others:
+            o = min(others, key=lambda d: d.arrives_at)
+            items.append(
+                say(
+                    MSG["next_other"],
+                    lang,
+                    train=say(TRAIN_NAME[o.train_type], lang),
+                    dep=hm(o.departs_at),
+                    arr=hm(o.arrives_at),
+                )
+            )
+        src = Source(
+            document_id="timetable",
+            title=first.source_title,
+            source_url=first.source_url,
+            verified_at=first.verified_at,
+        ).model_dump()
+        return items, src

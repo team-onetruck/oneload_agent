@@ -1,17 +1,29 @@
-"""한길 R2 모듈: AI Agent(handle_message) · Visual Localization(estimate_location).
+"""한길 R2 모듈 — oneload-backend 의 AI 규격(app/ai/contracts.py)에 맞춘 구현.
 
-Backend(R4) 연결 예:
-    from hangil_r2 import Agent, VisualLocalizer, OpenAILLM
-    agent = Agent(OpenAILLM(), search_knowledge=r3_search, search_pois=r4_search_pois)
-    resp = agent.handle_message(ctx, "공항 가는 티켓 어디서 사?", None)
+백엔드 연결 예 (app/main.py 의 create_app 기본값만 바꾸면 됨, 엔드포인트 변경 없음):
+    from hangil_r2 import LLMAgent, LLMVision, OpenAILLM, MockKnowledgeSearch
+    llm = OpenAILLM()
+    app = create_app(agent=LLMAgent(llm, search_knowledge=MockKnowledgeSearch(), fallback=RuleAgent()),
+                     vision=LLMVision(llm))
 """
-from .agent import Agent
-from .contracts import (AgentResponse, KnowledgeHit, LocalizationContext, LocationEstimate, POI,
-                        SessionContext)
-from .llm import FakeLLM, LLMError, LLMUnavailable, OpenAILLM
-from .localization import InvalidImage, VisualLocalizer
-from .tools import MapVersionMismatch, ToolUnavailable
 
-__all__ = ["Agent", "VisualLocalizer", "OpenAILLM", "FakeLLM", "AgentResponse", "LocationEstimate",
-           "SessionContext", "LocalizationContext", "KnowledgeHit", "POI", "LLMError", "LLMUnavailable",
-           "ToolUnavailable", "MapVersionMismatch", "InvalidImage"]
+from .agent import LLMAgent
+from .knowledge import KnowledgeHit, MockDepartures, MockKnowledgeSearch, ToolUnavailable
+from .llm import FakeLLM, LLMError, LLMUnavailable, OpenAILLM
+from .ranker import ambiguity_hint, rank_location
+from .vision import LLMVision
+
+__all__ = [
+    "LLMAgent",
+    "LLMVision",
+    "OpenAILLM",
+    "FakeLLM",
+    "LLMError",
+    "LLMUnavailable",
+    "KnowledgeHit",
+    "MockKnowledgeSearch",
+    "MockDepartures",
+    "ToolUnavailable",
+    "rank_location",
+    "ambiguity_hint",
+]

@@ -7,7 +7,7 @@
   "services": [
     {"train_type": "express", "first": "05:20", "last": "22:40", "every_min": 30,
      "duration_min": {"인천공항1터미널": 43, "인천공항2터미널": 51}},
-    {"train_type": "general", "first": "05:25", "last": "23:45", "every_min": 10,
+    {"train_type": "allstop", "first": "05:25", "last": "23:45", "every_min": 10,
      "duration_min": {"인천공항1터미널": 59, "인천공항2터미널": 66}}
   ]
 }
