@@ -1,4 +1,4 @@
-# hangil-r2-agent
+# oneload_agent — 한길 R2 (AI Agent · Visual Localization)
 
 한길(Hangil) 문제 해결형 AR 내비게이션의 **R2 파트** — AI Agent 와 사진 기반 위치 확인(Visual Localization).
 SKALA AI 서비스 개발 Mini-project · 담당 R2 AI Engineer (흐름) 정유은 · 기준 명세: 팀 API 명세 v0.3 (2026-10-22)
@@ -18,7 +18,7 @@ Agent 가 쓰는 Tool 은 `search_knowledge`(R3) · `search_pois`(R4) 와 [제�
 ## 실행
 
 ```bash
-git clone https://github.com/lea5063/hangil-r2-agent.git && cd hangil-r2-agent
+git clone https://github.com/team-onetruck/oneload_agent.git && cd oneload_agent
 python3 -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 pytest -q                                              # 46 passed — API 키 없이 (FakeLLM + Mock Tool)
