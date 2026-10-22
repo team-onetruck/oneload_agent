@@ -70,8 +70,15 @@ mocks/              maps/seoul-station.json (백엔드 사본) · knowledge.json
 eval/               agent_cases.csv (17문항) · run_eval.py
 scripts/            check_backend_compat.py
 tests/              agent 22 · vision 4 · ranker 7 · config 4 (파라미터 포함 37건)
-docs/               STEP05.md · localization.md · decisions.md · handoff.md
+docs/               FAQ.md · STEP05.md · localization.md · decisions.md · handoff.md
 ```
+
+## 문서
+- [FAQ (자주 묻는 질문)](docs/FAQ.md) — 처음이면 여기부터
+- [인수인계 · 백엔드 연결](docs/handoff.md)
+- [설계서 STEP 05 (R2 부분)](docs/STEP05.md)
+- [결정 기록](docs/decisions.md)
+- [사진 위치 확인 방법](docs/localization.md)
 
 ## 데이터 · 보안
 - `mocks/knowledge.json` 의 문구는 **데모**이며 실제 공항철도 이용 방법 · 요금이 아니다. 요금 문서는 일부러 없다 (요금 질문 → `cannot_answer`).
