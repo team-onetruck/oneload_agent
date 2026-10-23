@@ -64,17 +64,18 @@ uv run --project ../oneload-backend --with langgraph==1.2.16 --with python-doten
 
 ## CI · 배포
 
-`.github/workflows/ci.yml` (GitHub 호스트 runner만 사용. 이 저장소는 공개)
+`.github/workflows/ci.yml` (테스트는 GitHub 호스트 runner, 배포만 macserver 에 설치된 이 저장소 전용 self-hosted runner)
 
 | job | 언제 | 하는 일 |
 | --- | --- | --- |
 | `test` | 모든 PR · main push | `pytest -q` (Python 3.12, 백엔드 이미지와 같은 버전) |
 | `backend` | 모든 PR · main push | 백엔드 main 에 **이 커밋의 에이전트를 끼워** 백엔드 테스트 전체 + `check_backend_compat.py` (규격 비교, `--e2e`) |
-| `deploy` | main push, 위 두 job 통과 후 | 백엔드의 `agent-bump.yml` 을 시작한다. 백엔드가 이 커밋으로 고정(`pyproject.toml`)을 바꿔 커밋하고, 백엔드 CI 가 다시 테스트한 뒤 macserver 에 배포한다 |
+| `deploy` | main push, 위 두 job 통과 후 | oneload-infra 의 공용 배포를 이 저장소의 runner(`macserver-hangil-agent`)에서 돌린다. 서버는 백엔드 main + 이 저장소 main 으로 API 이미지를 다시 만든다 |
 
-- `deploy` 는 저장소 secret `HANGIL_DEPLOY_TOKEN` (oneload-backend 하나에만 Actions 읽기 · 쓰기 권한이 있는 fine-grained 토큰)을 쓴다.
-- 되돌리기: `gh workflow run agent-bump.yml -R team-onetruck/oneload-backend -f sha=<이전 커밋>`
-- 서버의 `OPENAI_API_KEY` 는 백엔드 저장소 secret 에만 있다. 이 저장소 CI 는 키 없이 FakeLLM 으로 돈다.
+- 서버는 **항상 이 저장소의 main** 을 쓴다. 백엔드 `pyproject.toml` 의 고정 커밋은 로컬 개발용이고, 백엔드 CI 와 배포는 이 저장소 main 으로 바꿔서 돈다.
+- 되돌리기: main 에서 해당 커밋을 revert 하면 다시 배포된다.
+- 서버의 `OPENAI_API_KEY` 는 백엔드 저장소 secret 에만 있다. 이 저장소에서 시작한 배포는 서버 설정을 건드리지 않고, CI 는 키 없이 FakeLLM 으로 돈다.
+- 공개 저장소라 포크 PR 워크플로는 관리자 승인 후에만 돈다. `.github/` 를 건드리는 포크 PR 실행은 승인하지 않는다.
 
 ## 구조
 

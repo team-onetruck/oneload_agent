@@ -1,6 +1,5 @@
-# Tests the agent on its own and inside the current oneload-backend, then ships main to the server.
-# Shipping = asking oneload-backend to pin this commit; its CI tests again and deploys to macserver.
-# Everything here runs on GitHub-hosted runners: this repository is public.
+# Tests the agent on its own and inside the current oneload-backend, then deploys main to macserver.
+# Tests run on GitHub-hosted runners; only the deploy job uses this repo's self-hosted runner.
 name: CI
 
 on:
@@ -71,10 +70,7 @@ jobs:
   deploy:
     needs: [test, backend]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      # oneload-backend/.github/workflows/agent-bump.yml pins this commit, then runs its CI / Deploy.
-      - run: gh workflow run agent-bump.yml -R team-onetruck/oneload-backend -f sha="$GITHUB_SHA"
-        env:
-          # Fine-grained token limited to oneload-backend, Actions: read and write.
-          GH_TOKEN: ${{ secrets.HANGIL_DEPLOY_TOKEN }}
+    # oneload-infra's shared deploy on this repo's own self-hosted runner on macserver: the server
+    # runs backend main with this agent. Fork PR workflows wait for a maintainer's approval; never
+    # approve one that touches .github/.
+    uses: team-onetruck/oneload-infra/.github/workflows/deploy.yml@main
