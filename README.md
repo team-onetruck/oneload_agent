@@ -72,7 +72,7 @@ uv run --project ../oneload-backend --with langgraph==1.2.16 --with python-doten
 | `backend` | 모든 PR · main push | 백엔드 main 에 **이 커밋의 에이전트를 끼워** 백엔드 테스트 전체 + `check_backend_compat.py` (규격 비교, `--e2e`) |
 | `deploy` | main push, 위 두 job 통과 후 | oneload-infra 의 공용 배포를 이 저장소의 runner(`macserver-hangil-agent`)에서 돌린다. 서버는 백엔드 main + 이 저장소 main 으로 API 이미지를 다시 만든다 |
 
-- 서버는 **항상 이 저장소의 main** 을 쓴다. 백엔드 `pyproject.toml` 의 고정 커밋은 로컬 개발용이고, 백엔드 CI 와 배포는 이 저장소 main 으로 바꿔서 돈다.
+- 서버는 **항상 이 저장소의 main** 을 쓴다. 로컬 백엔드는 옆 폴더(`../oneload_agent`)를 editable 로 설치하므로, 이 저장소에서 `git pull` 하거나 고친 내용이 백엔드를 다시 켜면 바로 반영된다. 백엔드 CI 와 배포는 그 폴더가 없어서 이 저장소 main 을 URL 로 고정해서 돈다.
 - 되돌리기: main 에서 해당 커밋을 revert 하면 다시 배포된다.
 - 서버의 `OPENAI_API_KEY` 는 백엔드 저장소 secret 에만 있다. 이 저장소에서 시작한 배포는 서버 설정을 건드리지 않고, CI 는 키 없이 FakeLLM 으로 돈다.
 - 공개 저장소라 포크 PR 워크플로는 관리자 승인 후에만 돈다. `.github/` 를 건드리는 포크 PR 실행은 승인하지 않는다.

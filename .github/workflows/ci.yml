@@ -23,8 +23,8 @@ jobs:
       - run: pytest -q
 
   backend:
-    # Backend main with this commit swapped in for its pinned agent: the backend's own tests,
-    # then scripts/check_backend_compat.py (copied contracts, shared map, API end to end).
+    # Backend main with this commit as its agent: the backend's own tests, then
+    # scripts/check_backend_compat.py (copied contracts, shared map, API end to end).
     runs-on: ubuntu-latest
     services:
       db:
@@ -39,10 +39,11 @@ jobs:
     env:
       TEST_DATABASE_URL: postgresql+psycopg://hangil:hangil@localhost:54329/hangil_test
     steps:
-      # Sibling folders, the layout check_backend_compat.py expects.
+      # Sibling folders, the layout the backend's pyproject.toml and check_backend_compat.py expect:
+      # the backend installs ../oneload_agent, i.e. this commit, editable.
       - uses: actions/checkout@v4
         with:
-          path: agent
+          path: oneload_agent
       - uses: actions/checkout@v4
         with:
           repository: team-onetruck/oneload-backend
@@ -52,18 +53,17 @@ jobs:
           repository: team-onetruck/oneload-data
           path: oneload-data
       - uses: astral-sh/setup-uv@v6
+      # Not --frozen: if this commit changes the agent's dependencies, the backend lock follows.
       - name: Backend environment with this agent
         working-directory: oneload-backend
-        run: |
-          uv sync --frozen
-          uv pip install --python .venv ../agent
+        run: uv sync
       - name: Backend tests
         working-directory: oneload-backend
         run: uv run --no-sync pytest -q
       - name: Contract check
-        run: oneload-backend/.venv/bin/python agent/scripts/check_backend_compat.py oneload-backend
+        run: oneload-backend/.venv/bin/python oneload_agent/scripts/check_backend_compat.py oneload-backend
       - name: End-to-end through the backend API
-        run: oneload-backend/.venv/bin/python agent/scripts/check_backend_compat.py oneload-backend --e2e
+        run: oneload-backend/.venv/bin/python oneload_agent/scripts/check_backend_compat.py oneload-backend --e2e
         env:
           DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
 
