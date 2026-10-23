@@ -62,6 +62,20 @@ uv run --project ../oneload-backend --with langgraph==1.2.16 --with python-doten
 검사 항목: 타입 스키마 · 허용 값 · **예외 클래스가 백엔드와 같은지** · R2 지도 사본(`mocks/maps/`)이 공유 지도(`oneload-data/maps/`)와 같은지.
 지도가 없거나 다르면 종료 코드 1 (성공으로 처리하지 않음). 백엔드 `tests/fixtures/maps/` 는 시험용이라 참고로만 비교한다.
 
+## CI · 배포
+
+`.github/workflows/ci.yml` (GitHub 호스트 runner만 사용. 이 저장소는 공개)
+
+| job | 언제 | 하는 일 |
+| --- | --- | --- |
+| `test` | 모든 PR · main push | `pytest -q` (Python 3.12, 백엔드 이미지와 같은 버전) |
+| `backend` | 모든 PR · main push | 백엔드 main 에 **이 커밋의 에이전트를 끼워** 백엔드 테스트 전체 + `check_backend_compat.py` (규격 비교, `--e2e`) |
+| `deploy` | main push, 위 두 job 통과 후 | 백엔드의 `agent-bump.yml` 을 시작한다. 백엔드가 이 커밋으로 고정(`pyproject.toml`)을 바꿔 커밋하고, 백엔드 CI 가 다시 테스트한 뒤 macserver 에 배포한다 |
+
+- `deploy` 는 저장소 secret `HANGIL_DEPLOY_TOKEN` (oneload-backend 하나에만 Actions 읽기 · 쓰기 권한이 있는 fine-grained 토큰)을 쓴다.
+- 되돌리기: `gh workflow run agent-bump.yml -R team-onetruck/oneload-backend -f sha=<이전 커밋>`
+- 서버의 `OPENAI_API_KEY` 는 백엔드 저장소 secret 에만 있다. 이 저장소 CI 는 키 없이 FakeLLM 으로 돈다.
+
 ## 구조
 
 ```
