@@ -110,8 +110,8 @@ docs/               FAQ.md · STEP05.md · localization.md · decisions.md · ha
 - API 키는 `.env` 에만 둔다. 오류 로그에는 예외 종류만 남긴다. 사진은 저장하지 않는다.
 
 ## 알려진 한계 (2026-10-23)
-- R2 패키지와 백엔드 연결 코드는 배포됐지만 서버에 `OPENAI_API_KEY` secret이 없어 현재는 `RuleAgent` · `NoVision` 대체 구현이 동작한다.
-- 실제 LLM · Vision 응답 평가는 유효한 배포 키를 설정한 뒤 진행해야 한다. 테스트 · 평가는 FakeLLM 기준이다.
+- R2 패키지가 배포 백엔드에서 `LLMAgent` · `LLMVision`으로 활성화됐고 실제 `/messages` OpenAI 호출을 확인했다.
+- 실제 Vision은 현장 사진 평가 전이다. 사진 위치는 모델이 읽은 특징을 지도와 대조하며 모델이 위치를 직접 정하지 않는다.
 - R3 RAG가 아직 없어 이용 안내는 패키지의 데모 문서로만 동작한다.
 
 ## 사용 도구
