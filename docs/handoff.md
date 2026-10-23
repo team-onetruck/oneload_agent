@@ -36,7 +36,7 @@ app = create_app(agent=agent, vision=vision)
 - `context["slots"]["train_type"]` 이 `express` · `allstop` 이면 **다른 열차 전용 문서는 빼고** 돌려줘야 한다
   (일반열차 안내에 직통열차 문서가 근거로 붙는 문제 — 테스트 A-21).
 - 요금 문서는 `scope="fare"` 로 표시. R2 는 요금 질문에 `scope="fare"` 문서만 근거로 쓴다 (없으면 `cannot_answer`).
-- 대역: `hangil_r2/knowledge.py MockKnowledgeSearch` + `mocks/knowledge.json`. 같은 시그니처 함수로 교체.
+- 대역: `hangil_r2/knowledge.py MockKnowledgeSearch` + `hangil_r2/mocks/knowledge.json`. 같은 시그니처 함수로 교체.
 
 ## R6 (QA) — 평가 실행
 ```bash
@@ -45,7 +45,7 @@ pytest -q                                             # 기능 테스트 33건 (
 python eval/run_eval.py agent --llm openai            # 질문 평가 17문항 (eval/agent_cases.csv)
 python eval/run_eval.py localization --llm openai     # 사진 평가 (eval/photos/<node_id>/*.jpg, 답사 사진)
 ```
-- 프롬프트 버전 비교: `.env` 의 `PROMPT_VERSION` → `prompts/CHANGELOG.md` 에 기록
+- 프롬프트 버전 비교: `.env` 의 `PROMPT_VERSION` → `hangil_r2/prompts/CHANGELOG.md` 에 기록
 - 문항의 `train_type` · `has_transit_card` 열 = 그 질문 직전 세션 슬롯 (여러 턴 대화를 한 줄로 시험)
 
 ## 남은 일 (R2)

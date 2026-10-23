@@ -22,7 +22,7 @@ from typing import Protocol
 
 from .knowledge import KnowledgeHit
 
-PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts"
+PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 
 # 백엔드 app/ai/contracts.py · app/domain/localization.py 와 같은 값 (scripts/check_backend_compat.py 가 확인)
 INTENTS = (

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oneload-agent"
+version = "0.1.0"
+description = "OpenAI-backed conversation and vision components for the Hangil backend"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain-openai==1.7.2",
+    "langgraph==1.2.16",
+    "pydantic==2.14.1",
+    "python-dotenv==1.2.4",
+]
+
+[tool.setuptools.packages.find]
+include = ["hangil_r2*"]
+
+[tool.setuptools.package-data]
+hangil_r2 = ["prompts/*.md", "mocks/*.json"]

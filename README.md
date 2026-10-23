@@ -67,6 +67,8 @@ uv run --project ../oneload-backend --with langgraph==1.2.16 --with python-doten
 ```
 hangil_r2/
   backend/          백엔드 규격 사본 (contracts · mapdata · guard · localization 타입) — 직접 수정 금지
+  prompts/          understand · compose · scene (v3) + CHANGELOG.md
+  mocks/            패키지에 포함되는 데모 지식 · 가상 시각표
   agent.py          LLMAgent — LangGraph 12노드 (이해 → 슬롯 → 되묻기 / 답변 / 목적지)
   vision.py         LLMVision — 사진 → 보이는 글자 · 시설
   llm.py            LLM 어댑터 (FakeLLM · OpenAILLM), 오류 2종 구분
@@ -74,8 +76,7 @@ hangil_r2/
   compat.py         백엔드와 같은 클래스여야 하는 예외 고르기 (사진 장애 → 503)
   config.py         .env 만들기 · 읽기 · 키 확인 (python -m hangil_r2.config)
   ranker.py         [제안] match_location 개선안 (드문 문구 가중 · 오타 허용 · 동점 안내)
-prompts/            understand · compose · scene (v3) + CHANGELOG.md
-mocks/              maps/seoul-station.json (oneload-data 공유 지도 사본) · knowledge.json (데모 문서) · timetable.json (가상)
+mocks/maps/         oneload-data 공유 지도 사본
 eval/               agent_cases.csv (17문항) · run_eval.py
 scripts/            check_backend_compat.py
 tests/              agent 25 · vision 7 · ranker 7 · config 4 (파라미터 포함 43건)
@@ -90,7 +91,7 @@ docs/               FAQ.md · STEP05.md · localization.md · decisions.md · ha
 - [사진 위치 확인 방법](docs/localization.md)
 
 ## 데이터 · 보안
-- `mocks/knowledge.json` 의 문구는 **데모**이며 실제 공항철도 이용 방법 · 요금이 아니다. 요금 문서는 일부러 없다 (요금 질문 → `cannot_answer`).
+- `hangil_r2/mocks/knowledge.json` 의 문구는 **데모**이며 실제 공항철도 이용 방법 · 요금이 아니다. 요금 문서는 일부러 없다 (요금 질문 → `cannot_answer`).
 - `mocks/maps/seoul-station.json` 은 `oneload-data/maps/` 공유 지도 사본. 층(B2 · B3 · B7)만 공식 확인, 나머지는 답사 전 임시값 (백엔드 README).
 - API 키는 `.env` 에만 둔다. 오류 로그에는 예외 종류만 남긴다. 사진은 저장하지 않는다.
 

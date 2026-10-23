@@ -20,7 +20,7 @@ flowchart LR
   subgraph R2[R2 oneload_agent]
     AG["LLMAgent<br/>LangGraph 12노드"]
     VI["LLMVision<br/>사진 → 보이는 글자 · 시설"]
-    PR[["prompts/ v3"]]
+    PR[["hangil_r2/prompts v3"]]
   end
 
   MSG --> AG --> GUARD

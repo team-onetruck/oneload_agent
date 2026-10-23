@@ -155,7 +155,7 @@ R2는 더 정확한 방식 `rank_location`(드문 글자 우선 · 오타 허용
 `search_knowledge(query, language, context) -> list[KnowledgeHit]` 모양의 함수를 주면 된다 (명세 v0.3 10장 필드, `verified_at` 필수).
 - `context["slots"]["train_type"]` 이 정해져 있으면 **다른 열차 전용 문서는 빼고** 돌려준다.
 - 요금 문서는 `scope="fare"` 로 표시한다.
-- 지금은 `MockKnowledgeSearch` + `mocks/knowledge.json`(데모 문서)으로 동작한다.
+- 지금은 `MockKnowledgeSearch` + `hangil_r2/mocks/knowledge.json`(데모 문서)으로 동작한다.
 
 ### Q15. 평가는 어떻게 함께 하나요? (R6)
 - 질문 평가: `eval/agent_cases.csv` (17문항). `train_type` · `has_transit_card` 열은 그 질문 직전 세션 슬롯이다.
@@ -165,11 +165,11 @@ R2는 더 정확한 방식 `rank_location`(드문 글자 우선 · 오타 허용
 ## 고치기 · 늘리기
 
 ### Q16. 새 질문 유형을 추가하려면?
-1. `prompts/understand_v*.md` 에 의도 · 주제 추가
+1. `hangil_r2/prompts/understand_v*.md` 에 의도 · 주제 추가
 2. `hangil_r2/llm.py` 허용 값 · `hangil_r2/agent.py` 분기 추가
 3. `tests/test_agent.py` 테스트 1개
 4. `eval/agent_cases.csv` 문항 1개
-5. `prompts/CHANGELOG.md` 기록
+5. `hangil_r2/prompts/CHANGELOG.md` 기록
 
 ### Q17. 프롬프트를 바꾸려면?
 새 버전 파일(예: `understand_v4.md`)을 만들고 `.env` 의 `PROMPT_VERSION` 으로 바꾼다.

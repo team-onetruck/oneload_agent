@@ -17,7 +17,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, model_validator
 
-MOCK_DIR = Path(__file__).resolve().parent.parent / "mocks"
+MOCK_DIR = Path(__file__).resolve().parent / "mocks"
 
 
 class ToolUnavailable(RuntimeError):
@@ -68,7 +68,7 @@ def _norm(s: str) -> str:
 
 
 class MockKnowledgeSearch:
-    """키워드 겹침으로 찾는 가짜 RAG (mocks/knowledge.json, 데모 문구). 실제 R3 는 pgvector 검색 예정."""
+    """키워드 겹침으로 찾는 가짜 RAG (패키지 내 mocks/knowledge.json, 데모 문구). 실제 R3 는 pgvector 검색 예정."""
 
     def __init__(self, path: str = "knowledge.json"):
         self._docs = _load(path)["docs"]
@@ -100,7 +100,7 @@ class MockKnowledgeSearch:
 
 
 class MockDepartures:
-    """첫차 · 막차 · 배차 간격으로 출발 시각을 만드는 가짜 시각표 (mocks/timetable.json, 가상 값)."""
+    """패키지 내 가상 시각표로 출발 시각을 만든다. 실제 공식 시각표가 연결되기 전까지만 사용한다."""
 
     def __init__(self, path: str = "timetable.json"):
         self._tt = _load(path)
