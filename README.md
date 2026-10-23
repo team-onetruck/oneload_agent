@@ -95,10 +95,10 @@ docs/               FAQ.md · STEP05.md · localization.md · decisions.md · ha
 - `mocks/maps/seoul-station.json` 은 `oneload-data/maps/` 공유 지도 사본. 층(B2 · B3 · B7)만 공식 확인, 나머지는 답사 전 임시값 (백엔드 README).
 - API 키는 `.env` 에만 둔다. 오류 로그에는 예외 종류만 남긴다. 사진은 저장하지 않는다.
 
-## 알려진 한계 (2026-10-22)
-- 실제 LLM · Vision 호출은 **아직 검증 전** (키 없는 환경). 테스트 · 평가는 FakeLLM 기준
-- 백엔드 시연 서버(`/api/v1/docs`)는 이 작업 환경에서 접속되지 않아, 같은 백엔드 코드를 로컬에서 띄워 확인함
-- R3 RAG 가 아직 없어 이용 안내는 데모 문서로만 동작
+## 알려진 한계 (2026-10-23)
+- R2 패키지와 백엔드 연결 코드는 배포됐지만 서버에 `OPENAI_API_KEY` secret이 없어 현재는 `RuleAgent` · `NoVision` 대체 구현이 동작한다.
+- 실제 LLM · Vision 응답 평가는 유효한 배포 키를 설정한 뒤 진행해야 한다. 테스트 · 평가는 FakeLLM 기준이다.
+- R3 RAG가 아직 없어 이용 안내는 패키지의 데모 문서로만 동작한다.
 
 ## 사용 도구
 Python 3.13 · LangGraph · Pydantic · langchain-openai. AI 코딩 도구를 활용해 작성했고, 모든 코드는 테스트와 백엔드 연결 확인으로 동작을 검증했다.
