@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Callable
@@ -107,6 +108,31 @@ MSG = {  # 백엔드 Lang 은 en · ko 두 가지
         "가장 빨리 도착 ({dest} 기준): {dep} 출발 {train}, {arr} 도착 예정",
     ),
     "next_other": ("Next {train}: leaves {dep}, arrives {arr}.", "다음 {train}: {dep} 출발, {arr} 도착 예정"),
+    "ask_exit_number": ("Which numbered exit do you want?", "몇 번 출구로 나가고 싶으세요?"),
+    "ask_single_use_card": (
+        "Do you currently have a single-use transit card?",
+        "지금 1회용 교통카드를 가지고 있나요?",
+    ),
+    "ask_card_returned": (
+        "Have you returned the single-use transit card?",
+        "1회용 교통카드를 반납했나요?",
+    ),
+    "unsupported_exit": (
+        "That exit isn't in the verified map yet. Choose Exit 1 or ask station staff.",
+        "해당 출구는 아직 확인된 지도에 없어요. 1번 출구를 선택하거나 역 직원에게 문의해 주세요.",
+    ),
+    "ask_ticket": (
+        "Before I guide you to the platform: have you already bought the ticket or travel card you need?",
+        "승강장으로 안내하기 전에 확인할게요. 필요한 승차권이나 교통카드를 이미 구입했나요?",
+    ),
+    "buy_first": (
+        "You need to buy the ticket or travel card first.",
+        "먼저 필요한 승차권이나 교통카드를 구입해야 해요.",
+    ),
+    "return_first": (
+        "Return the single-use transit card first, then I can guide you to the exit.",
+        "먼저 1회용 교통카드를 반납한 뒤 출구로 안내할게요.",
+    ),
 }
 BUTTONS = {
     "express": ("Express", "직통열차"),
@@ -117,6 +143,13 @@ BUTTONS = {
     "card_what": ("What's a transit card?", "교통카드가 뭐예요?"),
     "airport": ("Incheon Airport", "인천공항"),
     "pay": ("How do I pay?", "돈은 어떻게 내요?"),
+    "exit_1": ("Exit 1", "1번 출구"),
+    "single_yes": ("I have one", "가지고 있어요"),
+    "single_no": ("I don't have one", "없어요"),
+    "returned_yes": ("I returned it", "반납했어요"),
+    "returned_no": ("Not yet", "아직 안 했어요"),
+    "ticket_yes": ("I bought it", "구입했어요"),
+    "ticket_no": ("Not yet", "아직 안 샀어요"),
 }
 TRAIN_NAME = {"express": ("Express train", "직통열차"), "allstop": ("All-stop train", "일반열차")}
 DEST_EN = {"인천공항1터미널": "Incheon Airport T1", "인천공항2터미널": "Incheon Airport T2"}
@@ -170,7 +203,19 @@ class LLMAgent:
                     "retrieved": set(),
                 }
             )
-            response = AgentResponse.model_validate({**out["result"], "slots": out["slots"].model_dump()})
+            payload = {**out["result"], "slots": out["slots"].model_dump()}
+            question = (message or "").strip() or f"selected_poi_id={selected_poi_id}"
+            if not self.llm.verify(question, json.dumps(payload, ensure_ascii=False), ctx.language):
+                log.warning("response_relevance_rejected intent=%s", payload.get("intent"))
+                payload = {
+                    "status": "cannot_answer",
+                    "intent": payload.get("intent", "out_of_scope"),
+                    "assistant_message": say(MSG["no_evidence"], ctx.language),
+                    "slots": out["slots"].model_dump(),
+                    "next_action": "none",
+                }
+                out["retrieved"] = set()
+            response = AgentResponse.model_validate(payload)
             return AgentResult(response, frozenset(out["retrieved"]))
         except (LLMError, ValidationError) as exc:  # LLMUnavailable 포함
             log.warning("agent_fallback err=%s: %s", type(exc).__name__, exc)
@@ -200,7 +245,15 @@ class LLMAgent:
             "ask_train",
             "explain_options",
             "ask_card",
+            "ask_exit_number",
+            "ask_single_use_card",
+            "ask_card_returned",
+            "ask_ticket",
             "answer",
+            "purchase_destination",
+            "board_destination",
+            "exit_destination",
+            "card_refund_destination",
             "arex_destination",
             "find_poi",
         )
@@ -237,6 +290,10 @@ class LLMAgent:
                     "topic": None,
                     "train_type": None,
                     "has_transit_card": None,
+                    "exit_number": None,
+                    "has_single_use_card": None,
+                    "single_use_card_returned": None,
+                    "has_ticket": None,
                     "unsure": False,
                     "blocked": False,
                     "poi_query": None,
@@ -250,10 +307,18 @@ class LLMAgent:
         # 백엔드는 자기 Slots 클래스로 넘긴다. 사본 클래스와 이름만 같고 다른 클래스라 dict 를 거쳐 바꾼다.
         u, slots = s["u"], Slots.model_validate(s["ctx"].slots.model_dump())
         new = False
-        if u["train_type"] and u["train_type"] != slots.train_type:
-            slots.train_type, new = u["train_type"], True
-        if u["has_transit_card"] and u["has_transit_card"] != slots.has_transit_card:
-            slots.has_transit_card, new = u["has_transit_card"], True
+        for field in (
+            "train_type",
+            "has_transit_card",
+            "exit_number",
+            "has_single_use_card",
+            "single_use_card_returned",
+            "has_ticket",
+        ):
+            value = u.get(field)
+            if value is not None and value != getattr(slots, field):
+                setattr(slots, field, value)
+                new = True
         return {"slots": slots, "new_slot": new}
 
     def _route(self, s: State) -> str:
@@ -264,15 +329,53 @@ class LLMAgent:
             return "relocalize"
         if s.get("selected_poi_id"):
             return "select_poi"
+        history = " ".join(text.lower() for _, text in s["ctx"].recent_messages[-4:])
+        exit_flow = u["intent"] == "navigate_to_exit" or (
+            u["intent"] == "out_of_scope"
+            and slots.exit_number is not None
+            and (u.get("has_single_use_card") or u.get("single_use_card_returned") or "출구" in history or "exit" in history)
+        )
+        if exit_flow:
+            if slots.exit_number is None:
+                return "ask_exit_number"
+            if self._exit_poi(s["ctx"], slots.exit_number) is None:
+                return "ask_exit_number"
+            if slots.has_single_use_card == "unknown":
+                return "ask_single_use_card"
+            if slots.has_single_use_card == "yes" and slots.single_use_card_returned == "unknown":
+                return "ask_card_returned"
+            if slots.has_single_use_card == "yes" and slots.single_use_card_returned == "no":
+                return "card_refund_destination"
+            return "exit_destination"
         train_unknown = slots.train_type == "unknown"
         if u["intent"] in ("usage_question", "payment_question"):
-            if u["topic"] == "tickets" and train_unknown:  # 어떤 열차 표인지 알아야 답이 정해짐
+            if u["topic"] == "tickets" and train_unknown:
                 return "explain_options" if u["unsure"] else "ask_train"
             return "answer"
+        board_pending = any(word in history for word in ("타러", "승강장", "탑승", "board", "platform"))
+        board_flow = u["intent"] == "board_arex" or u.get("has_ticket") is not None or (
+            u["intent"] == "out_of_scope" and board_pending and s.get("new_slot")
+        )
+        if board_flow:
+            if train_unknown:
+                return "ask_train"
+            if slots.has_ticket == "unknown":
+                return "ask_ticket"
+            return "purchase_destination" if slots.has_ticket == "no" else "board_destination"
+        purchase_pending = any(word in history for word in ("구입", "구매", "매표", "buy", "purchase"))
+        purchase_flow = u["intent"] == "purchase_arex_ticket" or (
+            u["intent"] == "out_of_scope" and purchase_pending and s.get("new_slot")
+        )
+        if purchase_flow:
+            if train_unknown:
+                return "ask_train"
+            if slots.train_type == "allstop" and slots.has_transit_card == "unknown":
+                return "ask_card"
+            return "purchase_destination"
         arex = (
             u["intent"] == "ticket_purchase_and_navigation"
             or u["topic"] in ("tickets", "platform")
-            or s.get("new_slot")
+            or (s.get("new_slot") and (u.get("train_type") or u.get("has_transit_card")))
             or u["unsure"]
         )
         if arex:
@@ -283,7 +386,7 @@ class LLMAgent:
             return "arex_destination"
         if u["intent"] == "navigate_to_poi":
             return "find_poi"
-        return "deny"  # out_of_scope
+        return "deny"
 
     # ── 노드: 응답 ───────────────────────────────────────────────────
     def _deny(self, s: State):
@@ -358,10 +461,50 @@ class LLMAgent:
 
     def _ask_card(self, s: State):
         lang = s["ctx"].language
+        intent = s["u"]["intent"]
+        if intent not in ("purchase_arex_ticket", "ticket_purchase_and_navigation"):
+            intent = "payment_question"
         return {
             "result": {
-                **self._clarify(lang, MSG["ask_card"], "payment_question"),
+                **self._clarify(lang, MSG["ask_card"], intent),
                 "suggested_replies": self._buttons(lang, "card_yes", "card_no", "card_what"),
+            }
+        }
+
+    def _ask_exit_number(self, s: State):
+        lang = s["ctx"].language
+        pair = MSG["unsupported_exit"] if s["slots"].exit_number else MSG["ask_exit_number"]
+        return {
+            "result": {
+                **self._clarify(lang, pair, "navigate_to_exit"),
+                "suggested_replies": self._buttons(lang, "exit_1"),
+            }
+        }
+
+    def _ask_single_use_card(self, s: State):
+        lang = s["ctx"].language
+        return {
+            "result": {
+                **self._clarify(lang, MSG["ask_single_use_card"], "navigate_to_exit"),
+                "suggested_replies": self._buttons(lang, "single_yes", "single_no"),
+            }
+        }
+
+    def _ask_card_returned(self, s: State):
+        lang = s["ctx"].language
+        return {
+            "result": {
+                **self._clarify(lang, MSG["ask_card_returned"], "navigate_to_exit"),
+                "suggested_replies": self._buttons(lang, "returned_yes", "returned_no"),
+            }
+        }
+
+    def _ask_ticket(self, s: State):
+        lang = s["ctx"].language
+        return {
+            "result": {
+                **self._clarify(lang, MSG["ask_ticket"], "board_arex"),
+                "suggested_replies": self._buttons(lang, "ticket_yes", "ticket_no"),
             }
         }
 
@@ -397,6 +540,45 @@ class LLMAgent:
             },
             "retrieved": s["retrieved"],
         }
+
+    def _purchase_destination(self, s: State):
+        ctx, slots = s["ctx"], s["slots"]
+        poi = self._arex_poi(ctx, slots.train_type, "tickets")
+        if poi is None:
+            return {"result": self._clarify(ctx.language, MSG["unknown_place"], "purchase_arex_ticket")}
+        hits = self._search(
+            s, self._with_slots(say(("how to buy a ticket", "승차권 구매 방법"), ctx.language), slots, ctx.language)
+        )
+        answer = (self._compose(s, hits), self._sources(hits)) if hits else None
+        if s["u"]["intent"] == "board_arex" or s["u"].get("has_ticket") == "no":
+            prefix = say(MSG["buy_first"], ctx.language)
+            answer = (f"{prefix} {answer[0]}" if answer else prefix, answer[1] if answer else [])
+            intent = "board_arex"
+        else:
+            intent = "purchase_arex_ticket"
+        return {"result": self._destination(s, poi, intent, answer), "retrieved": s["retrieved"]}
+
+    def _board_destination(self, s: State):
+        ctx, slots = s["ctx"], s["slots"]
+        poi = self._arex_poi(ctx, slots.train_type, "platform")
+        if poi is None:
+            return {"result": self._clarify(ctx.language, MSG["unknown_place"], "board_arex")}
+        return {"result": self._destination(s, poi, "board_arex")}
+
+    def _exit_destination(self, s: State):
+        ctx, slots = s["ctx"], s["slots"]
+        poi = self._exit_poi(ctx, slots.exit_number)
+        if poi is None:
+            return {"result": self._clarify(ctx.language, MSG["unsupported_exit"], "navigate_to_exit")}
+        return {"result": self._destination(s, poi, "navigate_to_exit")}
+
+    def _card_refund_destination(self, s: State):
+        ctx = s["ctx"]
+        poi = next((p for p in ctx.map.pois if p.verified and p.category == "card_refund"), None)
+        if poi is None:
+            return {"result": self._clarify(ctx.language, MSG["unknown_place"], "navigate_to_exit")}
+        answer = (say(MSG["return_first"], ctx.language), [])
+        return {"result": self._destination(s, poi, "navigate_to_exit", answer)}
 
     def _arex_destination(self, s: State):
         ctx, slots, u = s["ctx"], s["slots"], s["u"]
@@ -446,6 +628,22 @@ class LLMAgent:
         """열차 종류 · 분류로 지도의 verified POI 를 찾는다 (POI id 를 코드에 박지 않음)."""
         return next(
             (p for p in ctx.map.pois if p.verified and p.train_type == train_type and p.category == category), None
+        )
+
+    @staticmethod
+    def _exit_poi(ctx: AgentContext, exit_number: str | None) -> Poi | None:
+        if not exit_number:
+            return None
+        needle = f"{exit_number}번 출구"
+        return next(
+            (
+                p
+                for p in ctx.map.pois
+                if p.verified
+                and p.category == "exit"
+                and (needle in (p.name.ko, *p.aliases) or f"Exit {exit_number}" in (p.name.en, *p.aliases))
+            ),
+            None,
         )
 
     @staticmethod

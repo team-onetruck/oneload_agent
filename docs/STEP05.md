@@ -18,9 +18,9 @@ flowchart LR
   end
 
   subgraph R2[R2 oneload_agent]
-    AG["LLMAgent<br/>LangGraph 12노드"]
+    AG["LLMAgent<br/>LangGraph 20노드"]
     VI["LLMVision<br/>사진 → 보이는 글자 · 시설"]
-    PR[["hangil_r2/prompts v3"]]
+    PR[["hangil_r2/prompts v4"]]
   end
 
   MSG --> AG --> GUARD
@@ -40,8 +40,8 @@ flowchart LR
 **A. 대화 (`LLMAgent.handle_message`)**
 1. 입력: 질문 + (선택) 사진 + 세션 문맥(`AgentContext`: 언어 · 지도 · 확정 위치 · 슬롯 · 최근 대화 10개)
 2. `read_photo`: 사진이 있으면 `LLMVision` 으로 보이는 글자 · 시설 요약 (예: 발매기)
-3. `understand` (LLM): 의도 6종 · 주제 · 슬롯(열차 종류 · 교통카드 유무) · '잘 모르겠어요' · 위험 여부
-4. `update_slots`: 세션 슬롯에 이번 대답을 합침 → 짧은 대답("직통열차", "없어요")도 이어서 처리
+3. `understand` (LLM): 의도 9종 · 주제 · 슬롯(열차 종류, 교통카드, 출구 번호, 1회용 카드 보유·반납, 표 구입) · 위험 여부
+4. `update_slots`: 세션 슬롯에 이번 대답을 합침 → 짧은 대답("직통열차", "없어요", "반납했어요")도 이어서 처리
 5. 분기 (코드가 결정)
 
 | 조건 | 노드 | 결과 |
@@ -49,14 +49,15 @@ flowchart LR
 | 위험 · 범위 밖 | `deny` | out_of_scope |
 | "길을 잘못 들었어" | `relocalize` | relocalize · locate |
 | 화면 버튼(selected_poi_id) | `select_poi` | verified POI 면 destination_set |
-| 열차 종류 모름 | `ask_train` | [직통열차] [일반열차] [잘 모르겠어요] |
-| "잘 모르겠어요" | `explain_options` | R3 자료로 차이 설명 (자료 없으면 비교하지 않음) |
+| 출구 번호 모름 / 1회용 카드 보유·반납 모름 | `ask_exit_number` / `ask_single_use_card` / `ask_card_returned` | 확인 후 반납기 또는 출구 목적지 |
+| 표 구입 요청 + 열차 종류 모름 | `ask_train` | [직통열차] [일반열차] |
+| 공항철도 탑승 요청 + 표 구입 여부 모름 | `ask_ticket` | 미구입이면 매표소, 구입했으면 승강장 |
 | 일반열차 + 카드 모름 | `ask_card` | [교통카드 있어요] [없어요] [교통카드가 뭐예요?] |
 | 이용 방법 · 결제 | `answer` | 자료 있으면 answered + 출처, 없으면 cannot_answer |
-| 열차 · 카드 확정 | `arex_destination` | 직통 → 직통 표 사는 곳 / 일반+카드 없음 → 일반 표 사는 곳 / 일반+카드 있음 → 일반 승강장 |
 | 그 밖의 장소 | `find_poi` | 지도 검색 1건 → 목적지, 여러 건 → 버튼 |
 
-6. 백엔드 `guard` 가 목적지(verified POI) · 출처(이번에 검색한 문서)를 한 번 더 검사
+6. `LLM.verify`: 최종 응답이 사용자 질문과 관련 있는지 JSON boolean으로 검사. false면 `cannot_answer`
+7. 백엔드 `guard` 가 목적지(verified POI) · 출처(이번에 검색한 문서)를 한 번 더 검사
 
 **B. 사진 위치 (`LLMVision.extract` → 백엔드 `match_location`)**: [docs/localization.md](localization.md)
 

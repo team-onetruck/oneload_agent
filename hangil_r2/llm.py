@@ -27,13 +27,16 @@ PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 # 백엔드 app/ai/contracts.py · app/domain/localization.py 와 같은 값 (scripts/check_backend_compat.py 가 확인)
 INTENTS = (
     "navigate_to_poi",
+    "navigate_to_exit",
+    "purchase_arex_ticket",
+    "board_arex",
     "ticket_purchase_and_navigation",
     "payment_question",
     "usage_question",
     "report_off_route",
     "out_of_scope",
 )
-TOPICS = ("tickets", "platform", "fare", "payment", "card", "deposit", "recharge", "other")
+TOPICS = ("tickets", "platform", "exit", "fare", "payment", "card", "deposit", "recharge", "other")
 TRAIN_TYPES = ("express", "allstop")
 CARD_VALUES = ("yes", "no")
 IMAGE_QUALITY = ("usable", "blurry", "too_dark", "no_signage", "too_close")
@@ -51,11 +54,12 @@ class LLMUnavailable(LLMError):
 class LLM(Protocol):
     def understand(self, message: str, history: list[tuple[str, str]], language: str, photo: str | None) -> dict: ...
     def compose(self, question: str, hits: list[KnowledgeHit], language: str) -> str: ...
+    def verify(self, question: str, answer: str, language: str) -> bool: ...
     def read_scene(self, image: bytes) -> dict: ...
 
 
 def prompt_version() -> str:
-    return os.getenv("PROMPT_VERSION", "v3")
+    return os.getenv("PROMPT_VERSION", "v4")
 
 
 def load_prompt(name: str) -> Template:
@@ -81,11 +85,20 @@ def validate_understanding(out: object) -> dict:
     if not isinstance(out, dict) or out.get("intent") not in INTENTS:
         raise LLMError(f"의도 분류 규격 위반: {out!r}")
     slots = out.get("slots") if isinstance(out.get("slots"), dict) else {}
+    exit_number = str(slots["exit_number"])[:8] if slots.get("exit_number") else None
     return {
         "intent": out["intent"],
         "topic": out.get("topic") if out.get("topic") in TOPICS else None,
         "train_type": slots.get("train_type") if slots.get("train_type") in TRAIN_TYPES else None,
         "has_transit_card": slots.get("has_transit_card") if slots.get("has_transit_card") in CARD_VALUES else None,
+        "exit_number": exit_number,
+        "has_single_use_card": slots.get("has_single_use_card")
+        if slots.get("has_single_use_card") in CARD_VALUES
+        else None,
+        "single_use_card_returned": slots.get("single_use_card_returned")
+        if slots.get("single_use_card_returned") in CARD_VALUES
+        else None,
+        "has_ticket": slots.get("has_ticket") if slots.get("has_ticket") in CARD_VALUES else None,
         "unsure": bool(out.get("unsure", False)),
         "blocked": bool(out.get("blocked", False)),
         "poi_query": str(out["poi_query"])[:100] if out.get("poi_query") else None,
@@ -126,9 +139,12 @@ class FakeLLM:
     LOST = ("잘못", "길을 잃", "헤매", "lost", "wrong way")
     UNSURE = ("모르", "not sure", "don't know")
 
-    def __init__(self, scene: dict | None = None, broken: bool = False, down: bool = False):
+    def __init__(
+        self, scene: dict | None = None, broken: bool = False, down: bool = False, relevant: bool = True
+    ):
         self.scene = scene or {"image_quality": "no_signage"}
-        self.broken, self.down = broken, down  # broken: 형식 위반 흉내, down: 장애 흉내
+        self.broken, self.down, self.relevant = broken, down, relevant
+        self.verify_calls = 0
 
     @staticmethod
     def _has(text: str, *words: str) -> bool:
@@ -155,16 +171,47 @@ class FakeLLM:
         if has(*self.LOST):
             return validate_understanding({**out, "intent": "report_off_route"})
         slots = {}
+        last_assistant = next((content.lower() for role, content in reversed(history) if role == "assistant"), "")
+        yes = has("있어", "있음", "가지고", "받았", "샀어", "구입했", "i have", "have one", "yes") or bool(
+            re.search(r"^\s*(yes|네)\b", m)
+        )
+        no = has("없어", "없음", "안 샀", "구입 안", "don't have", "do not have", "not yet") or bool(
+            re.search(r"^\s*(no|아니|아직)", m)
+        )
         if has("직통", "express"):
             slots["train_type"] = "express"
         elif has("일반", "all-stop", "allstop", "regular"):
             slots["train_type"] = "allstop"
-        if has("없어", "없음", "don't have", "do not have") or re.search(r"^\s*(no|아니)", m):
-            slots["has_transit_card"] = "no"
-        elif has("있어", "있음", "i have", "have one") or re.search(r"^\s*(yes|네)\b", m):
-            slots["has_transit_card"] = "yes"
+        exit_match = re.search(r"(?:exit\s*)?(\d+)\s*(?:번\s*)?(?:출구|exit)", m) or re.search(
+            r"(?:출구|exit)\s*(\d+)", m
+        )
+        if exit_match:
+            slots["exit_number"] = exit_match.group(1)
+        if has("반납했", "returned it", "already returned"):
+            slots["single_use_card_returned"] = "yes"
+        elif has("반납 안", "안 반납", "아직 반납", "not returned"):
+            slots["single_use_card_returned"] = "no"
+        elif "반납했" in last_assistant and (yes or no):
+            slots["single_use_card_returned"] = "yes" if yes else "no"
+        if has("1회용 교통카드", "single-use card", "single use card"):
+            slots["has_single_use_card"] = "no" if no else "yes" if yes else None
+        elif "1회용 교통카드" in last_assistant and "반납" not in last_assistant and (yes or no):
+            slots["has_single_use_card"] = "yes" if yes else "no"
+        if has("표 샀", "승차권 샀", "티켓 샀", "표 있어", "승차권 있어", "bought a ticket", "have a ticket"):
+            slots["has_ticket"] = "yes"
+        elif has("표 안", "승차권 안", "티켓 없어", "haven't bought", "no ticket"):
+            slots["has_ticket"] = "no"
+        elif ("구입" in last_assistant or "구매" in last_assistant or "ticket" in last_assistant) and (yes or no):
+            slots["has_ticket"] = "no" if no else "yes"
+        if "has_single_use_card" not in slots and "has_ticket" not in slots:
+            if no:
+                slots["has_transit_card"] = "no"
+            elif yes:
+                slots["has_transit_card"] = "yes"
         topic = (
-            "fare"
+            "exit"
+            if has("출구", "exit")
+            else "fare"
             if has("요금", "얼마", "가격", "fare", "price", "how much")
             else "deposit"
             if has("보증금", "환급", "deposit", "refund")
@@ -175,26 +222,30 @@ class FakeLLM:
             else "payment"
             if has("결제", "현금", "신용카드", "pay", "cash", "credit")
             else "platform"
-            if has("승강장", "타는 곳", "platform")
+            if has("승강장", "타는 곳", "타러", "탑승", "platform", "board")
             else "tickets"
-            if has("티켓", "승차권", "표 ", "표를", "표는", "ticket", "buy", "구매", "눌러", "press")
+            if has("티켓", "승차권", "표 ", "표를", "표는", "ticket", "buy", "구매", "구입", "눌러", "press")
             else None
         )
         if topic is None and photo and "ticket_machine" in photo:
             topic = "tickets"
-        where = has("어디", "where", "가는 길", "가려면")
-        if topic in ("payment", "card", "recharge"):
+        where = has("어디", "where", "가는 길", "가려면", "가고 싶")
+        if topic == "exit":
+            intent = "navigate_to_exit"
+        elif topic == "platform":
+            intent = "board_arex"
+        elif topic == "tickets" and has("구매", "구입", "사러", "사고", "buy", "purchase", "where"):
+            intent = "purchase_arex_ticket"
+        elif topic in ("payment", "card", "recharge"):
             intent = "payment_question"
         elif topic in ("fare", "deposit") or (topic == "tickets" and not where):
             intent = "usage_question"
-        elif topic == "platform":
-            intent = "navigate_to_poi"
         elif topic == "tickets" or has("공항", "인천", "airport", "incheon", "arex"):
             intent = "ticket_purchase_and_navigation"
         elif where:
             intent = "navigate_to_poi"
         else:
-            intent = "out_of_scope"  # 짧은 대답("직통열차", "없어요")은 agent 가 슬롯으로 이어 간다
+            intent = "out_of_scope"
         return validate_understanding({**out, "intent": intent, "topic": topic, "slots": slots})
 
     def compose(self, question, hits, language):
@@ -203,6 +254,14 @@ class FakeLLM:
         if self.broken:
             raise LLMError("fake broken output")
         return " ".join(f"{h.excerpt} [{i}]" for i, h in enumerate(hits, start=1))
+
+    def verify(self, question, answer, language):
+        if self.down:
+            raise LLMUnavailable("fake down")
+        if self.broken:
+            raise LLMError("fake broken output")
+        self.verify_calls += 1
+        return self.relevant
 
     def read_scene(self, image):
         if self.down:
@@ -251,6 +310,13 @@ class OpenAILLM:
         return self._ask(
             load_prompt("compose").substitute(question=question, documents=docs, language=language)
         ).strip()
+
+    def verify(self, question, answer, language):
+        prompt = load_prompt("verify").substitute(question=question, answer=answer, language=language)
+        out = parse_json(self._ask(prompt))
+        if not isinstance(out, dict) or type(out.get("relevant")) is not bool:
+            raise LLMError(f"관련성 판정 규격 위반: {out!r}")
+        return out["relevant"]
 
     def read_scene(self, image):
         b64 = base64.b64encode(image).decode()

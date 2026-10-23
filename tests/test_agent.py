@@ -231,3 +231,75 @@ def test_text_only_does_not_warn(ctx, caplog):  # A-24 사진 없는 질문은 �
     with caplog.at_level("WARNING", logger="hangil_r2.agent"):
         r = ask(agent(), ctx(), "공항 가는 티켓 어디서 사?")
     assert r.status == "needs_clarification" and "photo_ignored_no_vision" not in caplog.text
+
+
+
+
+def test_exit_flow_checks_single_use_card_and_return(ctx):
+    a = agent()
+    history: list[tuple[str, str]] = []
+    first_message = "1번 출구로 가고 싶어요"
+    first = ask(a, ctx(), first_message)
+    assert first.status == "needs_clarification" and first.slots.exit_number == "1"
+    assert "1회용 교통카드" in first.assistant_message
+
+    history.extend([("user", first_message), ("assistant", first.assistant_message)])
+    has_card_message = "가지고 있어요"
+    has_card = ask(a, ctx(slots=first.slots, history=history), has_card_message)
+    assert has_card.slots.has_single_use_card == "yes"
+    assert "반납했나요" in has_card.assistant_message
+
+    history.extend([("user", has_card_message), ("assistant", has_card.assistant_message)])
+    not_returned_message = "아직 안 했어요"
+    not_returned = ask(a, ctx(slots=has_card.slots, history=history), not_returned_message)
+    assert not_returned.slots.single_use_card_returned == "no"
+    assert not_returned.destination.poi_id == "poi-single-use-card-refund"
+
+    history.extend([("user", not_returned_message), ("assistant", not_returned.assistant_message)])
+    returned = ask(a, ctx(slots=not_returned.slots, history=history), "반납했어요")
+    assert returned.slots.single_use_card_returned == "yes"
+    assert returned.destination.poi_id == "poi-exit-1"
+
+
+def test_arex_ticket_purchase_routes_to_ticket_counter(ctx):
+    a = agent()
+    first_message = "공항철도 표를 구입하고 싶어요"
+    first = ask(a, ctx(), first_message)
+    assert first.status == "needs_clarification" and first.intent == "purchase_arex_ticket"
+
+    history = [("user", first_message), ("assistant", first.assistant_message)]
+    result = ask(a, ctx(slots=first.slots, history=history), "직통열차")
+    assert result.intent == "purchase_arex_ticket"
+    assert result.destination.poi_id == "poi-express-tickets"
+
+
+def test_arex_boarding_checks_purchase_then_chains_to_platform(ctx):
+    a = agent()
+    history: list[tuple[str, str]] = []
+    first_message = "공항철도 타러 가고 싶어요"
+    first = ask(a, ctx(), first_message)
+    history.extend([("user", first_message), ("assistant", first.assistant_message)])
+
+    train_message = "직통열차"
+    train = ask(a, ctx(slots=first.slots, history=history), train_message)
+    assert train.intent == "board_arex" and "구입했나요" in train.assistant_message
+    history.extend([("user", train_message), ("assistant", train.assistant_message)])
+
+    no_ticket_message = "아직 안 샀어요"
+    no_ticket = ask(a, ctx(slots=train.slots, history=history), no_ticket_message)
+    assert no_ticket.slots.has_ticket == "no"
+    assert no_ticket.destination.poi_id == "poi-express-tickets"
+    history.extend([("user", no_ticket_message), ("assistant", no_ticket.assistant_message)])
+
+    bought = ask(a, ctx(slots=no_ticket.slots, history=history), "구입했어요")
+    assert bought.slots.has_ticket == "yes"
+    assert bought.intent == "board_arex"
+    assert bought.destination.poi_id == "poi-express-platform"
+
+
+def test_irrelevant_final_response_becomes_cannot_answer(ctx):
+    llm = FakeLLM(relevant=False)
+    response = ask(agent(llm=llm), ctx(), "1번 출구로 가고 싶어요")
+    assert llm.verify_calls == 1
+    assert response.status == "cannot_answer"
+    assert response.destination is None

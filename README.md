@@ -82,11 +82,11 @@ uv run --project ../oneload-backend --with langgraph==1.2.16 --with python-doten
 ```
 hangil_r2/
   backend/          백엔드 규격 사본 (contracts · mapdata · guard · localization 타입) — 직접 수정 금지
-  prompts/          understand · compose · scene (v3) + CHANGELOG.md
+  prompts/          understand · compose · scene · verify (v4) + CHANGELOG.md
   mocks/            패키지에 포함되는 데모 지식 · 가상 시각표
-  agent.py          LLMAgent — LangGraph 12노드 (이해 → 슬롯 → 되묻기 / 답변 / 목적지)
+  agent.py          LLMAgent — LangGraph 20노드 (이해 → 슬롯 → 확인 질문 / 답변 / 목적지 → 관련성 검증)
   vision.py         LLMVision — 사진 → 보이는 글자 · 시설
-  llm.py            LLM 어댑터 (FakeLLM · OpenAILLM), 오류 2종 구분
+  llm.py            LLM 어댑터 (FakeLLM · OpenAILLM), 최종 응답 관련성 검증, 오류 2종 구분
   knowledge.py      R3 검색 · 시각표 도구 인터페이스 + Mock
   compat.py         백엔드와 같은 클래스여야 하는 예외 고르기 (사진 장애 → 503)
   config.py         .env 만들기 · 읽기 · 키 확인 (python -m hangil_r2.config)
@@ -94,7 +94,7 @@ hangil_r2/
 mocks/maps/         oneload-data 공유 지도 사본
 eval/               agent_cases.csv (17문항) · run_eval.py
 scripts/            check_backend_compat.py
-tests/              agent 25 · vision 7 · ranker 7 · config 4 (파라미터 포함 43건)
+tests/              agent 29 · vision 7 · ranker 7 · config 4 (파라미터 포함 47건)
 docs/               FAQ.md · STEP05.md · localization.md · decisions.md · handoff.md
 ```
 
