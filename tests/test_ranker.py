@@ -11,7 +11,8 @@ def feats(*texts, quality="usable"):
 # ── 백엔드 기존 테스트와 같은 기대 ─────────────────────────────────────
 def test_more_matching_sign_text_ranks_higher(seoul):  # R-01
     c = rank_location(feats("공항철도", "Airport Railroad", "4호선"), seoul, Hints(), "en")
-    assert [x.node_id for x in c] == ["line4-gates", "line1-gates"] and c[0].rank_score > c[1].rank_score
+    # The 2F elevator sign also reads "Airport Railroad" (map 2026-10-25.1), so more places may follow.
+    assert [x.node_id for x in c][:2] == ["line4-gates", "line1-gates"] and c[0].rank_score > c[1].rank_score
     assert "Sign reads “4호선”" in c[0].evidence
 
 
