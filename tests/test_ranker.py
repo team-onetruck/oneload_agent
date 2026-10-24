@@ -47,3 +47,10 @@ def test_tie_gives_hint_to_retake(seoul):  # R-07
     c = rank_location(feats("Airport Railroad"), seoul, Hints(), "ko")
     hint = ambiguity_hint(c, seoul, "ko")
     assert hint and "한 장 더" in hint
+
+
+def test_place_with_several_signs_is_one_candidate(seoul):  # R-08 line4-gates 는 표지판 3개 (지도 2026-10-25.1)
+    c = rank_location(feats("4호선", "Transfer", "Line 4"), seoul, Hints(), "en")
+    ids = [x.node_id for x in c]
+    assert ids[0] == "line4-gates" and len(ids) == len(set(ids))
+    assert c[0].evidence == ["Sign reads “4호선”", "Sign reads “Transfer”", "Sign reads “Line 4”"]
