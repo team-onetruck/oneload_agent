@@ -1,7 +1,8 @@
 """[제안] 백엔드 match_location 개선안 — 같은 입력 · 출력 (app/domain/localization.py).
 
 백엔드는 지금 '정규화 후 완전 일치 개수' 로 점수를 매긴다. 이 모듈은 같은 시그니처로 세 가지를 더한다.
-1. 드문 문구 가중 (IDF) : '공항철도' 처럼 여러 landmark 에 있는 문구보다 '4호선' 처럼 한 곳에만 있는 문구를 더 강한 증거로
+0. 지점 단위 후보      : 한 지점에 표지판(landmark)이 여러 개여도 후보는 하나 (백엔드 match_location 과 같음)
+1. 드문 문구 가중 (IDF) : '공항철도' 처럼 여러 지점에 있는 문구보다 '4호선' 처럼 한 곳에만 있는 문구를 더 강한 증거로
 2. 부분 · 오타 일치     : OCR 이 한두 글자 틀리거나("Airport Raiload") 문구 일부만 읽혀도 낮은 점수로 인정
 3. 동점일 때 안내       : 1 · 2위가 비슷하면 1위에만 있는 문구를 찍어 보라는 hint (백엔드 retake_hint 와 별개)
 
@@ -41,29 +42,36 @@ def text_match(seen: str, sign: str) -> float:
 
 
 def rank_location(features: VisionFeatures, map_: MapData, hints: Hints, lang: Lang) -> list[Candidate]:
+    """한 지점 = 후보 하나. 지점에 표지판(landmark)이 여러 개면 문구를 모아 한 번에 점수를 매긴다 (백엔드 match_location 과 같음)."""
     if features.image_quality != "usable":
         return []
-    total = max(len(map_.landmarks), 1)
+    signs = _signs_by_node(map_)
+    total = max(len(signs), 1)
     neighbours = _neighbours(map_, hints.last_node_id)
     scores: dict[str, float] = {}
-    evidence: dict[str, list[str]] = {}
+    evidence: dict[str, dict[str, str]] = {}  # node id -> 정규화 문구 -> 표지판에 적힌 문구
+    hits: dict[str, dict[str, int]] = {}  # node id -> landmark id -> 걸린 문구 수
     for seen in dict.fromkeys(t.text for t in features.texts):
-        per_lm = {}
-        for lm in map_.landmarks:
-            best = max(((text_match(seen, s), s) for s in lm.sign_texts), default=(0.0, ""))
+        per_node = {}
+        for node_id, node_signs in signs.items():
+            # 문구가 빈 표지판만 있는 지점도 멈추지 않게 default (지도 규격이 빈 sign_texts 를 허용)
+            best = max(
+                ((text_match(seen, s), s, lm_id) for s, lm_id in node_signs), key=lambda x: x[0], default=(0.0, "", "")
+            )
             if best[0] > 0:
-                per_lm[lm.landmark_id] = best
-        if not per_lm:
+                per_node[node_id] = best
+        if not per_node:
             continue
-        idf = math.log(1 + total / len(per_lm))  # 걸리는 landmark 가 적을수록 큰 가중치
-        for lm_id, (m, sign) in per_lm.items():
-            scores[lm_id] = scores.get(lm_id, 0.0) + m * idf
-            evidence.setdefault(lm_id, []).append(f"Sign reads “{sign}”" if lang == "en" else f"“{sign}” 안내판")
+        idf = math.log(1 + total / len(per_node))  # 걸리는 지점이 적을수록 큰 가중치
+        for node_id, (m, sign, lm_id) in per_node.items():
+            scores[node_id] = scores.get(node_id, 0.0) + m * idf
+            evidence.setdefault(node_id, {}).setdefault(normalise(sign), sign)
+            node_hits = hits.setdefault(node_id, {})
+            node_hits[lm_id] = node_hits.get(lm_id, 0) + 1
 
     ranked = []
-    by_id = {lm.landmark_id: lm for lm in map_.landmarks}
-    for lm_id, score in scores.items():
-        node = map_.node_by_id[by_id[lm_id].node_id]
+    for node_id, score in scores.items():
+        node = map_.node_by_id[node_id]
         score += HINT_BONUS if hints.floor_hint == node.floor_id else 0
         score += HINT_BONUS if node.id in neighbours else 0
         ranked.append(
@@ -73,8 +81,10 @@ def rank_location(features: VisionFeatures, map_: MapData, hints: Hints, lang: L
                     node_id=node.id,
                     floor_id=node.floor_id,
                     rank_score=round(score / (score + 1), 2),
-                    landmark_id=lm_id,
-                    evidence=evidence[lm_id],
+                    landmark_id=max(hits[node_id], key=hits[node_id].__getitem__),  # 가장 많이 걸린 표지판
+                    evidence=[
+                        f"Sign reads “{s}”" if lang == "en" else f"“{s}” 안내판" for s in evidence[node_id].values()
+                    ],
                 ),
             )
         )
@@ -83,12 +93,12 @@ def rank_location(features: VisionFeatures, map_: MapData, hints: Hints, lang: L
 
 
 def ambiguity_hint(candidates: list[Candidate], map_: MapData, lang: Lang) -> str | None:
-    """1 · 2위가 비슷하면, 1위 landmark 에만 있는 문구를 찍어 보라는 안내."""
+    """1 · 2위가 비슷하면, 1위 지점에만 있는 문구를 찍어 보라는 안내."""
     if len(candidates) < 2 or candidates[0].rank_score - candidates[1].rank_score >= AMBIGUITY_MARGIN:
         return None
-    by_id = {lm.landmark_id: lm for lm in map_.landmarks}
-    other = {normalise(s) for s in by_id[candidates[1].landmark_id].sign_texts}
-    for s in by_id[candidates[0].landmark_id].sign_texts:
+    signs = _signs_by_node(map_)
+    other = {normalise(s) for s, _ in signs.get(candidates[1].node_id, [])}
+    for s, _ in signs.get(candidates[0].node_id, []):
         if normalise(s) not in other:
             return (
                 f"If you see a “{s}” sign nearby, take one more photo of it."
@@ -96,6 +106,14 @@ def ambiguity_hint(candidates: list[Candidate], map_: MapData, lang: Lang) -> st
                 else f"주변에 “{s}” 안내판이 보이면 한 장 더 찍어 주세요."
             )
     return None
+
+
+def _signs_by_node(map_: MapData) -> dict[str, list[tuple[str, str]]]:
+    """node id -> [(표지판 문구, landmark id)], 지도 순서대로."""
+    signs: dict[str, list[tuple[str, str]]] = {}
+    for lm in map_.landmarks:
+        signs.setdefault(lm.node_id, []).extend((s, lm.landmark_id) for s in lm.sign_texts)
+    return signs
 
 
 def _neighbours(map_: MapData, node_id: str | None) -> set[str]:

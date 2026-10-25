@@ -1,0 +1,214 @@
+{
+ "_source": "team-onetruck/oneload-rag localization/cases.yaml @ f99704d (R3 합성 입력, 문구는 R3 특징 카드에서 가져옴 — 실제 사진 정확도 아님)",
+ "cases": [
+  {
+   "id": "L01",
+   "kind": "clean",
+   "expect": "express-tickets",
+   "texts": [
+    "직통열차 표사는 곳",
+    "Express Train Tickets"
+   ]
+  },
+  {
+   "id": "L02",
+   "kind": "clean",
+   "expect": "express-tickets",
+   "texts": [
+    "Express Train Tickets"
+   ]
+  },
+  {
+   "id": "L03",
+   "kind": "clean",
+   "expect": "allstop-tickets",
+   "texts": [
+    "일반열차 표사는 곳"
+   ]
+  },
+  {
+   "id": "L04",
+   "kind": "clean",
+   "expect": "allstop-tickets",
+   "texts": [
+    "Customer Information Center"
+   ]
+  },
+  {
+   "id": "L05",
+   "kind": "clean",
+   "expect": "arex-concourse",
+   "texts": [
+    "트래블센터",
+    "Travel Center"
+   ]
+  },
+  {
+   "id": "L06",
+   "kind": "clean",
+   "expect": "arex-concourse",
+   "texts": [
+    "도심공항터미널"
+   ]
+  },
+  {
+   "id": "L07",
+   "kind": "clean",
+   "expect": "express-platform",
+   "texts": [
+    "직통열차 승강장",
+    "인천공항1,2터미널역"
+   ]
+  },
+  {
+   "id": "L08",
+   "kind": "clean",
+   "expect": "allstop-platform",
+   "texts": [
+    "All-stop Train Platform",
+    "Gongdeok Station"
+   ]
+  },
+  {
+   "id": "L09",
+   "kind": "clean",
+   "expect": "allstop-tickets",
+   "texts": [
+    "Transfer to Line 1, Line 4"
+   ]
+  },
+  {
+   "id": "L10",
+   "kind": "clean",
+   "expect": "ktx-hall",
+   "texts": [
+    "KTX",
+    "맞이방"
+   ]
+  },
+  {
+   "id": "L11",
+   "kind": "clean",
+   "expect": "line4-gates",
+   "texts": [
+    "공항철도",
+    "4호선"
+   ]
+  },
+  {
+   "id": "L12",
+   "kind": "partial",
+   "expect": "allstop-tickets",
+   "texts": [
+    "All-stop Train Ticket"
+   ]
+  },
+  {
+   "id": "L13",
+   "kind": "partial",
+   "expect": "express-platform",
+   "texts": [
+    "Express Train Platf"
+   ]
+  },
+  {
+   "id": "L14",
+   "kind": "partial",
+   "expect": "allstop-tickets",
+   "texts": [
+    "고객안내"
+   ]
+  },
+  {
+   "id": "L15",
+   "kind": "typo",
+   "expect": "express-tickets",
+   "texts": [
+    "Expres Train Tickets"
+   ]
+  },
+  {
+   "id": "L16",
+   "kind": "typo",
+   "expect": "allstop-tickets",
+   "texts": [
+    "Custmer Information Center"
+   ]
+  },
+  {
+   "id": "L17",
+   "kind": "typo",
+   "expect": "express-tickets",
+   "texts": [
+    "직통열차표사는곳"
+   ]
+  },
+  {
+   "id": "L18",
+   "kind": "noise",
+   "expect": "express-tickets",
+   "texts": [
+    "Express Train Tickets",
+    "화장실",
+    "Toilet"
+   ]
+  },
+  {
+   "id": "L19",
+   "kind": "ambiguous",
+   "any_of": [
+    "line1-gates",
+    "line4-gates"
+   ],
+   "texts": [
+    "공항철도",
+    "Airport Railroad"
+   ]
+  },
+  {
+   "id": "L20",
+   "kind": "ambiguous",
+   "any_of": [
+    "allstop-tickets",
+    "allstop-platform",
+    "arex-concourse"
+   ],
+   "texts": [
+    "일반열차"
+   ]
+  },
+  {
+   "id": "L21",
+   "kind": "no_match",
+   "expect": "NO_MATCH",
+   "texts": [
+    "스타벅스",
+    "STARBUCKS"
+   ]
+  },
+  {
+   "id": "L22",
+   "kind": "no_match",
+   "expect": "NO_MATCH",
+   "texts": []
+  },
+  {
+   "id": "L23",
+   "kind": "no_match",
+   "expect": "NO_MATCH",
+   "quality": "blurry",
+   "texts": [
+    "Express Train Tickets"
+   ]
+  },
+  {
+   "id": "L24",
+   "kind": "no_match",
+   "expect": "NO_MATCH",
+   "texts": [
+    "시청역",
+    "City Hall"
+   ]
+  }
+ ]
+}
