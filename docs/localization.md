@@ -104,6 +104,19 @@ python eval/run_eval.py localization --photos eval/photos --llm openai
 
 실험 1회 = 설정 1개 변경 (예: `AMBIGUITY_MARGIN`, 포함 일치 가중치) → 결과를 `docs/experiments.md` 에 기록.
 
+### 사진 없이 하는 매칭 점검 (R3 합성 입력 24개)
+`tests/data/localization_cases.json` (oneload-rag `localization/cases.yaml` 사본) 을 `tests/test_ranker.py` R-10 · R-11 이 매번 돌린다.
+"사진에서 이 글자들이 읽혔다" 고 가정한 입력이라 **매칭 단계만** 보며, 문구를 R3 카드에서 가져와 점수가 후하다.
+
+| 지도 | top-1 | top-3 | NO_MATCH | 같은 지점 중복 |
+|---|---|---|---|---|
+| 2026-10-25.1 · 표지판 단위 순위 (이전) | 16/20 | 18/20 | 4/4 | 3건 |
+| 2026-10-25.1 · 지점 단위 순위 (현재) | 16/20 | 18/20 | 4/4 | 0건 |
+
+틀리는 2건은 매처가 아니라 **지도 문구 누락** (테스트에서 xfail 로 표시, 문구가 들어오면 통과로 바뀜):
+- L05 "트래블센터 · Travel Center" → 정답 `arex-concourse`. 지도 해당 지점에 이 문구가 없음 (R3 카드 `lm-b2-travel-center` 에는 있음)
+- L06 "도심공항터미널" → 정답 `arex-concourse`. 지도에서는 `allstop-tickets` · `ktx-hall` 에만 있음. R3 카드도 B2 배치는 **추정** → 답사로 확인 필요
+
 ## 6. 한계와 대안
 
 | 한계 | 대응 |

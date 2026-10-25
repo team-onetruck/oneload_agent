@@ -1,7 +1,8 @@
 """[제안] 백엔드 match_location 개선안 — 같은 입력 · 출력 (app/domain/localization.py).
 
 백엔드는 지금 '정규화 후 완전 일치 개수' 로 점수를 매긴다. 이 모듈은 같은 시그니처로 세 가지를 더한다.
-1. 드문 문구 가중 (IDF) : '공항철도' 처럼 여러 landmark 에 있는 문구보다 '4호선' 처럼 한 곳에만 있는 문구를 더 강한 증거로
+0. 지점 단위 후보      : 한 지점에 표지판(landmark)이 여러 개여도 후보는 하나 (백엔드 match_location 과 같음)
+1. 드문 문구 가중 (IDF) : '공항철도' 처럼 여러 지점에 있는 문구보다 '4호선' 처럼 한 곳에만 있는 문구를 더 강한 증거로
 2. 부분 · 오타 일치     : OCR 이 한두 글자 틀리거나("Airport Raiload") 문구 일부만 읽혀도 낮은 점수로 인정
 3. 동점일 때 안내       : 1 · 2위가 비슷하면 1위에만 있는 문구를 찍어 보라는 hint (백엔드 retake_hint 와 별개)
 
@@ -53,7 +54,10 @@ def rank_location(features: VisionFeatures, map_: MapData, hints: Hints, lang: L
     for seen in dict.fromkeys(t.text for t in features.texts):
         per_node = {}
         for node_id, node_signs in signs.items():
-            best = max(((text_match(seen, s), s, lm_id) for s, lm_id in node_signs), key=lambda x: x[0])
+            # 문구가 빈 표지판만 있는 지점도 멈추지 않게 default (지도 규격이 빈 sign_texts 를 허용)
+            best = max(
+                ((text_match(seen, s), s, lm_id) for s, lm_id in node_signs), key=lambda x: x[0], default=(0.0, "", "")
+            )
             if best[0] > 0:
                 per_node[node_id] = best
         if not per_node:
@@ -110,8 +114,6 @@ def _signs_by_node(map_: MapData) -> dict[str, list[tuple[str, str]]]:
     for lm in map_.landmarks:
         signs.setdefault(lm.node_id, []).extend((s, lm.landmark_id) for s in lm.sign_texts)
     return signs
-
-
 
 
 def _neighbours(map_: MapData, node_id: str | None) -> set[str]:
