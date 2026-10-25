@@ -20,6 +20,7 @@
 - LLM 은 '이해' 와 '자료 기반 문장' 만 한다. 목적지 · 다음 단계 결정은 코드가 지도 · 슬롯으로 한다.
 - 목적지는 ctx.map 의 verified POI 에서만 고른다 (백엔드 guard 가 한 번 더 막는다).
 - 이용 방법은 검색된 자료가 있을 때만 답한다. 없으면 cannot_answer — 요금 · 시간을 지어내지 않는다.
+- 자료가 검색돼도 그 안에 질문의 답이 없으면(compose 가 NO_ANSWER) cannot_answer. 출처는 답에 인용한 자료만 붙인다.
 - 대화 상태는 Agent 가 들고 있지 않다. 슬롯은 응답의 slots 로 돌려주고, 백엔드가 세션에 저장해 다음 ctx.slots 로 준다.
 - LLM 장애 · 형식 위반이면 fallback(백엔드 RuleAgent)으로 넘긴다. fallback 이 없으면 cannot_answer.
 """
@@ -48,7 +49,7 @@ from .backend.contracts import (
 from .backend.mapdata import Poi
 from .compat import vision_unavailable_types
 from .knowledge import DepartureSearch, KnowledgeHit, KnowledgeSearch, ToolUnavailable
-from .llm import LLM, LLMError, LLMUnavailable
+from .llm import LLM, NO_ANSWER, LLMError, LLMUnavailable
 
 log = logging.getLogger("hangil_r2.agent")
 
@@ -85,7 +86,6 @@ MSG = {  # 백엔드 Lang 은 en · ko 두 가지
         "I don't have verified information on that, so I won't guess. Please ask the information center.",
         "확인된 자료가 없어서 추측하지 않을게요. 역 안내센터에 문의해 주세요.",
     ),
-    "sources_only": ("Please check the guide below.", "아래 안내 자료를 확인해 주세요."),
     "unknown_place": (
         "I couldn't find that place on the verified map. Where would you like to go?",
         "확인된 지도에서 그 장소를 찾지 못했어요. 어디로 가고 싶으세요?",
@@ -435,9 +435,9 @@ class LLMAgent:
         """'잘 모르겠어요' → 자료로 차이 설명 (+ 시각표가 있으면 도착 시각) 후 다시 묻기."""
         lang = s["ctx"].language
         hits = self._search(s, say(("Express vs All-stop difference", "직통열차 일반열차 차이"), lang))
-        items, sources, notes = [], self._sources(hits), []
-        if hits:
-            message = f"{self._compose(s, hits)} {say(MSG['pick_train'], lang)}"
+        items, sources, notes = [], [], []
+        if answer := self._grounded(s, hits):
+            message, sources = f"{answer[0]} {say(MSG['pick_train'], lang)}", answer[1]
         else:
             message, notes = say(MSG["no_compare"], lang), [say(MSG["unverified_compare"], lang)]
         arrival = self._arrival_items(s)
@@ -514,7 +514,8 @@ class LLMAgent:
         hits = self._search(s, self._with_slots(u["knowledge_query"] or s["message"], s["slots"], lang))
         if u["topic"] == "fare":  # '직통열차' 같은 단어로 구매 안내 문서가 걸려도 요금 근거는 아니다
             hits = [h for h in hits if h.scope == "fare"]
-        if not hits:
+        answer = self._grounded(s, hits)
+        if answer is None:
             return {
                 "result": {
                     "status": "cannot_answer",
@@ -533,8 +534,8 @@ class LLMAgent:
             "result": {
                 "status": "answered",
                 "intent": u["intent"],
-                "assistant_message": self._compose(s, hits),
-                "sources": self._sources(hits),
+                "assistant_message": answer[0],
+                "sources": answer[1],
                 "suggested_replies": replies,
                 "next_action": "none",
             },
@@ -549,7 +550,7 @@ class LLMAgent:
         hits = self._search(
             s, self._with_slots(say(("how to buy a ticket", "승차권 구매 방법"), ctx.language), slots, ctx.language)
         )
-        answer = (self._compose(s, hits), self._sources(hits)) if hits else None
+        answer = self._grounded(s, hits)
         if s["u"]["intent"] == "board_arex" or s["u"].get("has_ticket") == "no":
             prefix = say(MSG["buy_first"], ctx.language)
             answer = (f"{prefix} {answer[0]}" if answer else prefix, answer[1] if answer else [])
@@ -595,8 +596,7 @@ class LLMAgent:
             hits = self._search(
                 s, self._with_slots(say(("how to buy a ticket", "승차권 구매 방법"), ctx.language), slots, ctx.language)
             )
-            if hits:
-                answer = (self._compose(s, hits), self._sources(hits))
+            answer = self._grounded(s, hits)
         return {"result": self._destination(s, poi, intent, answer), "retrieved": s["retrieved"]}
 
     def _find_poi(self, s: State):
@@ -671,20 +671,28 @@ class LLMAgent:
         s["retrieved"].update(h.document_id for h in hits)
         return hits
 
-    def _compose(self, s: State, hits: list[KnowledgeHit]) -> str:
-        """자료 근거 문장. 인용 번호가 없거나 범위 밖이면 '자료를 확인해 주세요' 로 대체 (LLM 장애는 위로 올림)."""
-        lang = s["ctx"].language
+    def _grounded(self, s: State, hits: list[KnowledgeHit]) -> tuple[str, list[dict]] | None:
+        """자료로 답할 수 있으면 (근거 문장, 인용한 자료의 출처), 아니면 None (LLM 장애는 위로 올림).
+
+        None 인 경우: 자료 없음 · compose 가 NO_ANSWER(자료에 질문의 답이 없음) · 인용 번호가 없거나 범위 밖.
+        검색된 자료라도 인용하지 않았으면 출처로 붙이지 않는다 (#5).
+        """
+        if not hits:
+            return None
         try:
-            text = self.llm.compose(s["message"] or "-", hits, lang)
-            cited = {int(n) for n in re.findall(r"\[(\d+)\]", text)}
-            if not cited or not cited <= set(range(1, len(hits) + 1)):
+            text = self.llm.compose(s["message"] or "-", hits, s["ctx"].language).strip()
+            if text.startswith(NO_ANSWER):
+                log.info("compose_no_answer hits=%s", [h.document_id for h in hits])
+                return None
+            cited = sorted({int(n) for n in re.findall(r"\[(\d+)\]", text)})
+            if not cited or not set(cited) <= set(range(1, len(hits) + 1)):
                 raise LLMError(f"인용 번호 위반: {cited}")
-            return text[:600]
+            return text[:600], self._sources([hits[n - 1] for n in cited])
         except LLMUnavailable:
             raise
         except LLMError as exc:
-            log.warning("compose_fallback %s", exc)
-            return say(MSG["sources_only"], lang)
+            log.warning("compose_rejected %s", exc)
+            return None
 
     @staticmethod
     def _sources(hits: list[KnowledgeHit]) -> list[dict]:

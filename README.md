@@ -82,7 +82,7 @@ uv run --project ../oneload-backend --with langgraph==1.2.16 --with python-doten
 ```
 hangil_r2/
   backend/          백엔드 규격 사본 (contracts · mapdata · guard · localization 타입) — 직접 수정 금지
-  prompts/          understand · compose · scene · verify (v4) + CHANGELOG.md
+  prompts/          understand · compose · scene · verify (v5) + CHANGELOG.md
   mocks/            패키지에 포함되는 데모 지식 · 가상 시각표
   agent.py          LLMAgent — LangGraph 20노드 (이해 → 슬롯 → 확인 질문 / 답변 / 목적지 → 관련성 검증)
   vision.py         LLMVision — 사진 → 보이는 글자 · 시설
