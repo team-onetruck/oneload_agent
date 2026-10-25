@@ -50,6 +50,7 @@ python eval/run_eval.py localization --llm openai     # 사진 평가 (eval/phot
 
 ## 남은 일 (R2)
 - [x] 실제 LLM 1회 호출 확인 — 배포 `/messages`에서 규칙 에이전트가 처리하지 못하는 표현으로 확인
-- [ ] 실제 LLM 으로 평가 17문항 baseline → 실패 분류 → 프롬프트 v4 실험 1건
-- [ ] R3 실제 검색 연결 후 같은 평가 재실행
+- [x] 실제 LLM 으로 평가 17문항 baseline → 실패 분류 → 프롬프트 v4 · v5 비교 (2026-10-26, [결과](live-llm-eval-20261026.md))
+- [x] R3 실제 검색으로 근거 41문항 평가 (main · PR #11 v4 · v5 비교)
+- [ ] 짧은 대답 이어받기 · 거절 상태값 · 영어 인용 개선 후 3회 반복 측정
 - [ ] (R4 판단) `rank_location` 을 `match_location` 대신 쓸지 — `tests/test_ranker.py` 가 백엔드 기존 기대를 지킴
