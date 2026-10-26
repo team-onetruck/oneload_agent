@@ -8,7 +8,7 @@ from datetime import datetime
 
 import pytest
 
-from hangil_r2 import FakeLLM, LLMAgent, MockDepartures, MockKnowledgeSearch, ToolUnavailable
+from hangil_r2 import FakeLLM, KnowledgeHit, LLMAgent, MockDepartures, MockKnowledgeSearch, ToolUnavailable
 from hangil_r2.agent import KST
 from hangil_r2.backend.contracts import AgentResponse, AgentResult, Slots
 from hangil_r2.backend.guard import guard
@@ -148,6 +148,41 @@ def test_guard_keeps_only_retrieved_sources(ctx):  # A-17 인용한 문서 = 이
     res = agent().handle_message(ctx(), "보증금 환급은 어떻게 해?", None, None)
     assert {s.document_id for s in res.response.sources} <= res.retrieved_document_ids
 
+
+
+# ── 근거 판정 (#5): 자료로 답할 수 있을 때만 답하고, 인용한 자료만 출처로 ─────────────────
+def two_docs(q, lang, c):
+    """질문과 상관없이 문서 2개를 돌려주는 검색 (범위 밖 질문에 키워드만 겹친 문서가 걸린 상황)."""
+    return [
+        KnowledgeHit(document_id=f"doc-{n}", title=n, excerpt=f"{n} 본문", verified_at="2026-10-23", scope="ticket")
+        for n in ("first", "second")
+    ]
+
+
+def test_no_answer_in_documents_means_cannot_answer(ctx):  # A-25 "리무진 요금" 에 공항철도 문서만 걸린 경우
+    r = ask(agent(llm=FakeLLM(answerable=False)), ctx(), "보증금 환급은 어떻게 해?")
+    assert r.status == "cannot_answer" and r.sources == [] and "[1]" not in r.assistant_message
+
+
+def test_only_cited_documents_become_sources(ctx):  # A-26 2개 검색, [2] 만 인용
+    r = ask(agent(llm=FakeLLM(cite=[2]), search_knowledge=two_docs), ctx(), "보증금 환급은 어떻게 해?")
+    assert r.status == "answered" and [s.document_id for s in r.sources] == ["doc-second"]
+
+
+def test_citation_out_of_range_drops_answer_and_sources(ctx):  # A-27 없는 번호 [9] 인용 → 근거 없음
+    r = ask(agent(llm=FakeLLM(cite=[9]), search_knowledge=two_docs), ctx(), "보증금 환급은 어떻게 해?")
+    assert r.status == "cannot_answer" and r.sources == []
+
+
+def test_destination_stays_without_unsupported_sources(ctx):  # A-28 목적지는 지도로 정해지고, 답 없는 자료는 붙이지 않음
+    r = ask(agent(llm=FakeLLM(answerable=False)), ctx(), "직통열차")
+    assert r.status == "destination_set" and r.destination.poi_id == "poi-express-tickets"
+    assert r.sources == [] and "[1]" not in r.assistant_message
+
+
+def test_unsure_without_answerable_evidence_does_not_compare(ctx):  # A-29 A-05 와 같은 결과
+    r = ask(agent(llm=FakeLLM(answerable=False)), ctx(), "잘 모르겠어요")
+    assert r.status == "needs_clarification" and not r.sources and r.unverified_notes
 
 # ── [선택] 시각표 기준 도착 시각 (기본 꺼짐, D-25) ─────────────────────────────────
 def test_arrival_items_when_timetable_given(ctx):  # A-18

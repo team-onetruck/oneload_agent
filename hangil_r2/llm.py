@@ -2,7 +2,7 @@
 
 LLM 이 하는 일은 세 가지뿐이다.
 1. understand : 사용자 말 → 의도 · 주제 · 슬롯 (백엔드 contracts 의 값으로만)
-2. compose    : 검색된 자료로만 답변 문장 (인용 번호 필수)
+2. compose    : 검색된 자료로만 답변 문장 (인용 번호 필수). 자료에 답이 없으면 NO_ANSWER 만
 3. read_scene : 사진 → 보이는 글자 · 시설 (백엔드 VisionFeatures 모양). 위치 판단은 하지 않는다
 
 오류는 두 종류로 나눈다.
@@ -23,6 +23,7 @@ from typing import Protocol
 from .knowledge import KnowledgeHit
 
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
+NO_ANSWER = "NO_ANSWER"  # compose: 검색된 자료로는 질문에 답할 수 없음 (prompts/compose_v5.md)
 
 # 백엔드 app/ai/contracts.py · app/domain/localization.py 와 같은 값 (scripts/check_backend_compat.py 가 확인)
 INTENTS = (
@@ -59,7 +60,7 @@ class LLM(Protocol):
 
 
 def prompt_version() -> str:
-    return os.getenv("PROMPT_VERSION", "v4")
+    return os.getenv("PROMPT_VERSION", "v5")
 
 
 def load_prompt(name: str) -> Template:
@@ -140,10 +141,18 @@ class FakeLLM:
     UNSURE = ("모르", "not sure", "don't know")
 
     def __init__(
-        self, scene: dict | None = None, broken: bool = False, down: bool = False, relevant: bool = True
+        self,
+        scene: dict | None = None,
+        broken: bool = False,
+        down: bool = False,
+        relevant: bool = True,
+        answerable: bool = True,
+        cite: list[int] | None = None,
     ):
+        """answerable=False: 자료에 답이 없다고 판정 (NO_ANSWER). cite: 인용할 자료 번호 (기본: 전부)."""
         self.scene = scene or {"image_quality": "no_signage"}
         self.broken, self.down, self.relevant = broken, down, relevant
+        self.answerable, self.cite = answerable, cite
         self.verify_calls = 0
 
     @staticmethod
@@ -253,7 +262,10 @@ class FakeLLM:
             raise LLMUnavailable("fake down")
         if self.broken:
             raise LLMError("fake broken output")
-        return " ".join(f"{h.excerpt} [{i}]" for i, h in enumerate(hits, start=1))
+        if not self.answerable:
+            return NO_ANSWER
+        cite = self.cite or range(1, len(hits) + 1)
+        return " ".join(f"{hits[i - 1].excerpt if i <= len(hits) else '-'} [{i}]" for i in cite)
 
     def verify(self, question, answer, language):
         if self.down:
