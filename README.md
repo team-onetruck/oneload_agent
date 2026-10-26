@@ -110,10 +110,12 @@ docs/               FAQ.md · STEP05.md · localization.md · decisions.md · ha
 - `mocks/maps/seoul-station.json` 은 `oneload-data/maps/` 공유 지도 사본. 층(B2 · B3 · B7)만 공식 확인, 나머지는 답사 전 임시값 (백엔드 README).
 - API 키는 `.env` 에만 둔다. 오류 로그에는 예외 종류만 남긴다. 사진은 저장하지 않는다.
 
-## 알려진 한계 (2026-10-23)
+## 알려진 한계 (2026-10-26)
 - R2 패키지가 배포 백엔드에서 `LLMAgent` · `LLMVision`으로 활성화됐고 실제 `/messages` OpenAI 호출을 확인했다.
 - 실제 Vision은 현장 사진 평가 전이다. 사진 위치는 모델이 읽은 특징을 지도와 대조하며 모델이 위치를 직접 정하지 않는다.
-- R3 RAG가 아직 없어 이용 안내는 패키지의 데모 문서로만 동작한다.
+- 실제 LLM(gpt-4o-mini) 평가: 대화 17문항 11~12/17, 근거 41문항 범위 밖 21/21 · 무관한 출처 29 → 0 (PR #11 + v5). 각 1~2회 실행이라 편차가 있다 → [docs/live-llm-eval-20261026.md](docs/live-llm-eval-20261026.md)
+- 실제 LLM에서 "있어요/없어요" 같은 짧은 대답을 앞 질문과 잇지 못하는 경우가 있다 (다음 개선).
+- 이 저장소의 `MockKnowledgeSearch` 는 데모 문서다. 백엔드는 R3 `hangil_rag` 공식 문서 검색을 쓴다.
 
 ## 사용 도구
 Python 3.13 · LangGraph · Pydantic · langchain-openai. AI 코딩 도구를 활용해 작성했고, 모든 코드는 테스트와 백엔드 연결 확인으로 동작을 검증했다.
